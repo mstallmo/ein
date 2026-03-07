@@ -1,4 +1,4 @@
-use super::prelude::*;
+use ein_plugin::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 use std::fs;
 
@@ -10,7 +10,13 @@ struct ReadArgs {
 #[derive(Debug, Clone)]
 pub struct ReadTool;
 
-impl Tool for ReadTool {
+impl ConstructableToolPlugin for ReadTool {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl ToolPlugin for ReadTool {
     fn name(&self) -> &str {
         "Read"
     }
@@ -28,3 +34,5 @@ impl Tool for ReadTool {
         Ok(ToolResult::new(id, file_contents))
     }
 }
+
+ein_plugin::export!(ReadTool);

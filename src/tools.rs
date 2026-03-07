@@ -1,219 +1,102 @@
 mod bash;
-mod read;
-mod write;
-
-pub mod prelude {
-    pub use super::{Tool, ToolDef, ToolResult};
-}
 
 pub use bash::BashTool;
-pub use read::ReadTool;
-pub use write::WriteTool;
 
-use serde::{
-    Deserialize, Serialize,
-    ser::{self, SerializeStruct},
-};
-use std::collections;
+use async_trait::async_trait;
+use ein_plugin::{ToolDef, ToolResult};
+use std::path::Path;
+use wasmtime::{Engine, Store, component::*};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
 
-pub trait Tool: Send + Sync {
+// plugin.wit
+bindgen!({
+    world: "plugin",
+    path: "wit/plugin",
+    imports: { default: async },
+    exports: { default: async }
+});
+
+#[async_trait]
+pub(crate) trait Tool {
     fn name(&self) -> &str;
-    fn schema(&self) -> ToolDef;
-    fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
+    fn schema(&self) -> &ToolDef;
+    async fn call(&mut self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
 }
 
-#[derive(Debug, Clone)]
-pub enum ToolDef {
-    Function {
-        name: String,
-        description: String,
-        parameters: ToolFunctionParams,
-    },
-}
-
-impl ToolDef {
-    pub fn function(
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> ToolFunctionBuilder {
-        ToolFunctionBuilder::new(name.into(), description.into())
-    }
-}
-
-impl ser::Serialize for ToolDef {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: ser::Serializer,
-    {
-        match self {
-            ToolDef::Function {
-                name,
-                description,
-                parameters,
-            } => {
-                // A temporary local struct to serialize the nested "function" object.
-                struct FunctionBody<'a> {
-                    name: &'a str,
-                    description: &'a str,
-                    parameters: &'a ToolFunctionParams,
-                }
-
-                impl<'a> ser::Serialize for FunctionBody<'a> {
-                    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-                    where
-                        S: ser::Serializer,
-                    {
-                        let mut s = serializer.serialize_struct("FunctionBody", 3)?;
-                        s.serialize_field("name", self.name)?;
-                        s.serialize_field("description", self.description)?;
-                        s.serialize_field("parameters", self.parameters)?;
-                        s.end()
-                    }
-                }
-
-                // Top-level object: { "type": "function", "function": { ... } }
-                let mut s = serializer.serialize_struct("ToolDef", 2)?;
-                s.serialize_field("type", "function")?;
-                s.serialize_field(
-                    "function",
-                    &FunctionBody {
-                        name,
-                        description,
-                        parameters,
-                    },
-                )?;
-                s.end()
-            }
-        }
-    }
-}
-
-struct ParamDef {
+pub struct WasmTool {
+    // Static values that don't change during tool execution
     name: String,
-    param_type: String,
-    description: String,
-    required: bool,
+    schema: ToolDef, // Would be better if this was strongly typed
+    // Mutable state for `call`
+    store: Store<super::MyState>,
+    bindings: Plugin,
+    handle: ResourceAny,
 }
 
-pub struct ToolFunctionBuilder {
-    name: String,
-    description: String,
-    props: Vec<ParamDef>,
-}
+impl WasmTool {
+    pub async fn load<P: AsRef<Path>>(
+        engine: &Engine,
+        linker: &Linker<super::MyState>,
+        path: P,
+    ) -> anyhow::Result<Self> {
+        let wasi = WasiCtx::builder()
+            .inherit_stdio()
+            .inherit_args()
+            .preopened_dir(".", ".", DirPerms::all(), FilePerms::all())
+            .expect("failed to preopen dir")
+            .build();
 
-impl ToolFunctionBuilder {
-    pub fn new(name: String, description: String) -> Self {
-        Self {
+        let mut store = Store::new(
+            &engine,
+            super::MyState {
+                wasi_ctx: wasi,
+                resource_table: ResourceTable::new(),
+            },
+        );
+
+        let component = Component::from_file(engine, path)?;
+        let bindings = Plugin::instantiate_async(&mut store, &component, linker).await?;
+
+        let accessor = bindings.tool().tool();
+        let handle = accessor.call_constructor(&mut store).await?;
+        let name = accessor.call_name(&mut store, handle).await?;
+        let schema = accessor.call_schema(&mut store, handle).await?;
+
+        Ok(Self {
             name,
-            description,
-            props: Vec::new(),
-        }
+            schema: serde_json::from_str(&schema)?,
+            store,
+            bindings,
+            handle,
+        })
     }
 
-    pub fn param(
-        mut self,
-        name: impl Into<String>,
-        param_type: impl Into<String>,
-        description: impl Into<String>,
-        required: bool,
-    ) -> Self {
-        self.props.push(ParamDef {
-            name: name.into(),
-            param_type: param_type.into(),
-            description: description.into(),
-            required,
-        });
-        self
-    }
+    pub async fn cleanup(&mut self) -> anyhow::Result<()> {
+        self.handle.resource_drop_async(&mut self.store).await?;
 
-    pub fn build(self) -> ToolDef {
-        let mut props = ToolFuncProps::new();
-        let mut required_props = Vec::new();
-
-        for param_def in self.props {
-            props.add_prop(
-                param_def.name.clone(),
-                ToolFuncPropInfo::new(param_def.param_type, param_def.description),
-            );
-
-            if param_def.required {
-                required_props.push(param_def.name)
-            }
-        }
-
-        let params = ToolFunctionParams::Object {
-            properties: props,
-            required: required_props,
-        };
-
-        ToolDef::Function {
-            name: self.name,
-            description: self.description,
-            parameters: params,
-        }
+        Ok(())
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "lowercase")]
-pub enum ToolFunctionParams {
-    Object {
-        properties: ToolFuncProps,
-        required: Vec<String>,
-    },
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
-pub struct ToolFuncProps(collections::HashMap<String, ToolFuncPropInfo>);
-
-impl ToolFuncProps {
-    pub fn new() -> Self {
-        Self(collections::HashMap::new())
+#[async_trait]
+impl Tool for WasmTool {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    pub fn add_prop(&mut self, name: impl ToString, info: ToolFuncPropInfo) {
-        self.0.insert(name.to_string(), info);
+    fn schema(&self) -> &ToolDef {
+        &self.schema
     }
-}
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolFuncPropInfo {
-    #[serde(rename = "type")]
-    prop_type: String,
-    description: String,
-}
+    async fn call(&mut self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+        let res = self
+            .bindings
+            .tool()
+            .tool()
+            .call_call(&mut self.store, self.handle, id, args)
+            .await?
+            .map_err(|err| anyhow::anyhow!(err))?;
 
-impl ToolFuncPropInfo {
-    pub fn new(prop_type: String, description: String) -> Self {
-        Self {
-            prop_type,
-            description,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    User,
-    Assistant,
-    Tool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ToolResult {
-    role: Role,
-    tool_call_id: String,
-    content: String,
-}
-
-impl ToolResult {
-    pub fn new(id: impl ToString, content: String) -> Self {
-        Self {
-            role: Role::Tool,
-            tool_call_id: id.to_string(),
-            content,
-        }
+        Ok(serde_json::from_str(&res)?)
     }
 }

@@ -1,0 +1,12 @@
+package ein:plugin;
+
+world plugin {
+    export tool: interface {
+        resource tool {
+            constructor();
+            name: func() -> string;
+            schema: func() -> string;
+            call: func(id: string, args: string) -> result<string, string>;
+        }
+    }
+}
