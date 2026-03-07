@@ -1,4 +1,4 @@
-use super::prelude::*;
+use ein_plugin::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 use std::{fs, io::Write};
 
@@ -11,7 +11,13 @@ struct WriteArgs {
 #[derive(Debug, Clone)]
 pub struct WriteTool;
 
-impl Tool for WriteTool {
+impl ConstructableToolPlugin for WriteTool {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl ToolPlugin for WriteTool {
     fn name(&self) -> &str {
         "Write"
     }
@@ -53,3 +59,5 @@ impl Tool for WriteTool {
         ))
     }
 }
+
+ein_plugin::export!(WriteTool);

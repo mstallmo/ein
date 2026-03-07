@@ -1,12 +1,22 @@
 mod tools;
 
-use crate::tools::{BashTool, ReadTool, Role, Tool, WriteTool};
 use anyhow::anyhow;
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
+use ein_plugin::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections, env, process};
+use std::{
+    collections, env,
+    path::{Path, PathBuf},
+    process,
+};
+use tokio::fs;
+use wasmtime::Engine;
+use wasmtime::component::*;
+use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+
+use crate::tools::{BashTool, Tool, WasmTool};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Choice {
@@ -55,12 +65,62 @@ struct Args {
 
 struct ToolRegistry(collections::HashMap<String, Box<dyn Tool>>);
 
+struct MyState {
+    resource_table: ResourceTable,
+    wasi_ctx: WasiCtx,
+}
+
+impl WasiView for MyState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
+    }
+}
+
 impl ToolRegistry {
     fn new() -> Self {
-        Self(collections::HashMap::<String, Box<dyn Tool>>::new())
+        let mut reg = collections::HashMap::<String, Box<dyn Tool>>::new();
+
+        let bash_tool = BashTool::new();
+        reg.insert(bash_tool.name().to_string(), Box::new(bash_tool));
+
+        Self(reg)
     }
 
-    fn add_tool(&mut self, tool: impl Tool + 'static) {
+    async fn load<P: AsRef<Path>>(
+        engine: &Engine,
+        linker: &Linker<MyState>,
+        plugin_dir: P,
+    ) -> anyhow::Result<Self> {
+        let mut registry = Self::new();
+
+        let mut entries = fs::read_dir(plugin_dir.as_ref()).await?;
+
+        loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
+                        let tool = tools::WasmTool::load(engine, linker, entry.path()).await?;
+                        registry.add_tool(tool);
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    eprintln!(
+                        "failed to get entry from directory {}: {err}",
+                        plugin_dir.as_ref().display()
+                    );
+                }
+            }
+        }
+
+        Ok(registry)
+    }
+
+    fn add_tool(&mut self, tool: WasmTool) {
+        println!("Adding tool: {}", tool.name());
         self.0.insert(tool.name().to_string(), Box::new(tool));
     }
 
@@ -71,14 +131,45 @@ impl ToolRegistry {
             .collect::<Result<Vec<_>, serde_json::Error>>()
     }
 
-    fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.0.get(name).map(|b| b.as_ref())
+    fn get(&mut self, name: &str) -> Option<&mut Box<dyn Tool>> {
+        self.0.get_mut(name)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EinConfig {
+    ein_dir: PathBuf,
+    plugin_dir: PathBuf,
+}
+
+impl Default for EinConfig {
+    fn default() -> Self {
+        let ein_dir = dirs::home_dir()
+            .expect("Failed to load EinConfig, Missing home directory")
+            .join(".ein");
+
+        let plugin_dir = if cfg!(debug_assertions) {
+            PathBuf::from("./target/wasm32-wasip2/debug")
+        } else {
+            ein_dir.join("plugins")
+        };
+
+        Self {
+            ein_dir,
+            plugin_dir,
+        }
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    let ein_config = EinConfig::default();
+
+    let engine = Engine::default();
+    let mut linker = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
     let base_url = env::var("OPENROUTER_BASE_URL")
         .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
@@ -99,10 +190,7 @@ async fn main() -> anyhow::Result<()> {
             "content": args.prompt
     })];
 
-    let mut tool_registry = ToolRegistry::new();
-    tool_registry.add_tool(ReadTool {});
-    tool_registry.add_tool(WriteTool {});
-    tool_registry.add_tool(BashTool {});
+    let mut tool_registry = ToolRegistry::load(&engine, &linker, &ein_config.plugin_dir).await?;
 
     loop {
         let response: Value = client
@@ -116,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
 
         // Uncomment for debug information
-        // eprintln!("{:#?}", response);
+        eprintln!("{:#?}", response);
 
         let choices: Vec<Choice> = response
             .get("choices")
@@ -138,7 +226,7 @@ async fn main() -> anyhow::Result<()> {
                             return Err(anyhow!("Missing tool {}", function.name));
                         };
 
-                        let res = tool.call(id, &function.arguments)?;
+                        let res = tool.call(id, &function.arguments).await?;
                         messages.push(serde_json::to_value(res)?);
                     }
                 };
