@@ -1,22 +1,20 @@
+mod bindings;
+mod syscalls;
 mod tools;
 
 use anyhow::anyhow;
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
-use ein_plugin::Role;
+use ein_tool::Role;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections, env,
-    path::{Path, PathBuf},
-    process,
-};
-use tokio::fs;
+use std::{env, path::PathBuf, process};
 use wasmtime::Engine;
 use wasmtime::component::*;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
-use crate::tools::{BashTool, Tool, WasmTool};
+use crate::bindings::Plugin;
+use crate::tools::ToolRegistry;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Choice {
@@ -63,14 +61,12 @@ struct Args {
     prompt: String,
 }
 
-struct ToolRegistry(collections::HashMap<String, Box<dyn Tool>>);
-
-struct MyState {
+struct HarnessState {
     resource_table: ResourceTable,
     wasi_ctx: WasiCtx,
 }
 
-impl WasiView for MyState {
+impl WasiView for HarnessState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
         WasiCtxView {
             ctx: &mut self.wasi_ctx,
@@ -79,65 +75,10 @@ impl WasiView for MyState {
     }
 }
 
-impl ToolRegistry {
-    fn new() -> Self {
-        let mut reg = collections::HashMap::<String, Box<dyn Tool>>::new();
-
-        let bash_tool = BashTool::new();
-        reg.insert(bash_tool.name().to_string(), Box::new(bash_tool));
-
-        Self(reg)
-    }
-
-    async fn load<P: AsRef<Path>>(
-        engine: &Engine,
-        linker: &Linker<MyState>,
-        plugin_dir: P,
-    ) -> anyhow::Result<Self> {
-        let mut registry = Self::new();
-
-        let mut entries = fs::read_dir(plugin_dir.as_ref()).await?;
-
-        loop {
-            match entries.next_entry().await {
-                Ok(Some(entry)) => {
-                    if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
-                        let tool = tools::WasmTool::load(engine, linker, entry.path()).await?;
-                        registry.add_tool(tool);
-                    }
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    eprintln!(
-                        "failed to get entry from directory {}: {err}",
-                        plugin_dir.as_ref().display()
-                    );
-                }
-            }
-        }
-
-        Ok(registry)
-    }
-
-    fn add_tool(&mut self, tool: WasmTool) {
-        println!("Adding tool: {}", tool.name());
-        self.0.insert(tool.name().to_string(), Box::new(tool));
-    }
-
-    fn schemas(&self) -> Result<Vec<Value>, serde_json::Error> {
-        self.0
-            .values()
-            .map(|tool| serde_json::to_value(tool.schema()))
-            .collect::<Result<Vec<_>, serde_json::Error>>()
-    }
-
-    fn get(&mut self, name: &str) -> Option<&mut Box<dyn Tool>> {
-        self.0.get_mut(name)
-    }
-}
 
 #[derive(Debug, Clone)]
 struct EinConfig {
+    #[expect(unused)]
     ein_dir: PathBuf,
     plugin_dir: PathBuf,
 }
@@ -170,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
     let engine = Engine::default();
     let mut linker = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    Plugin::add_to_linker::<HarnessState, HasSelf<HarnessState>>(&mut linker, |state| state)?;
 
     let base_url = env::var("OPENROUTER_BASE_URL")
         .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
@@ -199,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
                 "messages": messages,
                 "model": "anthropic/claude-haiku-4.5",
                 "tools": tool_registry.schemas()?,
-                "max_tokens": 5000,
+                "max_tokens": 2500,
             }))
             .await?;
 

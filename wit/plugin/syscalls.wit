@@ -1,0 +1,6 @@
+package ein:plugin;
+
+interface host {
+    log: func(msg: string);
+    spawn: func(args: string) -> result<string, string>;
+}

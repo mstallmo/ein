@@ -1,6 +1,8 @@
 package ein:plugin;
 
 world plugin {
+    import host;
+
     export tool: interface {
         resource tool {
             constructor();

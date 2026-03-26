@@ -1,4 +1,4 @@
-use ein_plugin::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
+use ein_tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 use std::fs;
 
@@ -28,6 +28,8 @@ impl ToolPlugin for ReadTool {
     }
 
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+        ein_tool::syscalls::log(&format!("Reading file with args: {args}"));
+
         let args: ReadArgs = serde_json::from_str(args)?;
 
         let file_contents = fs::read_to_string(&args.file_path)?;
@@ -35,4 +37,4 @@ impl ToolPlugin for ReadTool {
     }
 }
 
-ein_plugin::export!(ReadTool);
+ein_tool::export!(ReadTool);
