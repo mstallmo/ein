@@ -1,3 +1,7 @@
+pub mod syscalls {
+    pub use crate::tool::ein::plugin::host::{log, spawn};
+}
+
 #[doc(hidden)]
 pub mod tool {
     use super::ConstructableToolPlugin;
@@ -8,7 +12,7 @@ pub mod tool {
         path: "../../wit/plugin",
         export_macro_name: "__export_plugin_inner",
         pub_export_macro: true,
-        default_bindings_module: "ein_plugin::tool"
+        default_bindings_module: "ein_tool::tool"
     });
 
     impl<T> exports::tool::Guest for T

@@ -730,10 +730,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-openai",
- "async-trait",
  "clap",
  "dirs",
- "ein_plugin",
+ "ein_tool",
  "serde",
  "serde_json",
  "tokio",
@@ -742,10 +741,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "ein_plugin"
+name = "ein_bash"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ein_tool",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
@@ -756,7 +756,17 @@ name = "ein_read"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_plugin",
+ "ein_tool",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.53.1",
+]
+
+[[package]]
+name = "ein_tool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
@@ -767,7 +777,7 @@ name = "ein_write"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_plugin",
+ "ein_tool",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
