@@ -76,7 +76,7 @@ The TUI stores its configuration at `~/.ein/config.json`. The file is created wi
 | `model` | OpenRouter model ID sent to the server each session |
 | `max_tokens` | Maximum tokens per LLM response |
 | `allowed_paths` | Filesystem paths the WASM tools may read/write (preopened for every session) |
-| `allowed_hosts` | Hostnames the WASM tools may connect to (empty = unrestricted) |
+| `allowed_hosts` | Hostnames the WASM tools may connect to (empty = deny all; `"*"` = allow all) |
 
 `allowed_paths` and `allowed_hosts` act as a persistent allowlist. In addition, at startup the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
 
