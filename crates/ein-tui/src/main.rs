@@ -59,10 +59,16 @@ struct CommandDef {
     description: &'static str,
 }
 
-const COMMANDS: &[CommandDef] = &[CommandDef {
-    name: "/exit",
-    description: "Exit Ein",
-}];
+const COMMANDS: &[CommandDef] = &[
+    CommandDef {
+        name: "/exit",
+        description: "Exit Ein",
+    },
+    CommandDef {
+        name: "/config",
+        description: "Edit ~/.ein/config.json",
+    },
+];
 
 // ---------------------------------------------------------------------------
 // Connection state
@@ -412,7 +418,9 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 /// Renders the startup modal asking the user whether to allow access to the
 /// current working directory. Overlays the entire terminal using `Clear`.
 fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
-    let modal_width = (frame.area().width * 7 / 10).max(50).min(frame.area().width);
+    let modal_width = (frame.area().width * 7 / 10)
+        .max(50)
+        .min(frame.area().width);
     let modal_height = 7u16;
     let area = centered_rect(modal_width, modal_height, frame.area());
 
@@ -443,9 +451,19 @@ fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
         )),
         Line::raw(""),
         Line::from(vec![
-            Span::styled(" [Y]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " [Y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" Allow   ", Style::default().fg(MUTED_COLOR)),
-            Span::styled("[N]", Style::default().fg(DISCONNECTED_COLOR).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[N]",
+                Style::default()
+                    .fg(DISCONNECTED_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" Deny", Style::default().fg(MUTED_COLOR)),
         ]),
     ];
@@ -654,14 +672,20 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| cfg.model.clone());
 
     // Collect the cwd for the startup modal (shown before connecting).
-    let cwd_str = std::env::current_dir().ok().map(|p| p.display().to_string());
+    let cwd_str = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string());
 
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
 
     // If there is no cwd to prompt about, spawn the connection manager immediately.
     // Otherwise it is spawned when the modal is dismissed.
     if cwd_str.is_none() {
-        tokio::spawn(connection_manager(server_addr.clone(), cfg.clone(), event_tx.clone()));
+        tokio::spawn(connection_manager(
+            server_addr.clone(),
+            cfg.clone(),
+            event_tx.clone(),
+        ));
     }
 
     // Configure the terminal for raw / alternate-screen rendering.
@@ -736,6 +760,22 @@ async fn main() -> anyhow::Result<()> {
                         // Slash commands work regardless of connection state.
                         if text == "/exit" {
                             break;
+                        }
+
+                        if text == "/config" {
+                            if let Some(path) =
+                                dirs::home_dir().map(|h| h.join(".ein").join("config.json"))
+                            {
+                                let editor =
+                                    std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+                                disable_raw_mode()?;
+                                execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                                let _ = std::process::Command::new(&editor).arg(&path).status();
+                                enable_raw_mode()?;
+                                execute!(terminal.backend_mut(), EnterAlternateScreen)?;
+                                terminal.clear()?;
+                            }
+                            continue;
                         }
 
                         // Prompts require an active connection.
