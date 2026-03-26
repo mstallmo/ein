@@ -1,0 +1,15 @@
+[package]
+name = "ein-tui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ein-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow    = { workspace = true }
+clap      = { version = "4.3.14", features = ["derive"] }
+ein-proto = { path = "../ein-proto" }
+tokio     = { workspace = true }
+tonic     = { workspace = true }
