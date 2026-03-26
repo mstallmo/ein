@@ -1,16 +1,22 @@
+mod config;
+
+use crate::config::load_or_create_config;
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyEventKind},
+    event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ein_proto::ein::{UserInput, agent_client::AgentClient, agent_event::Event as ServerEvent};
+use ein_proto::ein::{
+    AgentEvent, SessionConfig, UserInput, agent_client::AgentClient,
+    agent_event::Event as ServerEvent, user_input,
+};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
@@ -34,6 +40,12 @@ const THINKING_COLOR: Color = Color::Rgb(140, 180, 200);
 /// Muted grey used for secondary text: tool args, autocomplete labels, etc.
 const MUTED_COLOR: Color = Color::DarkGray;
 
+/// Muted white used for the top autocomplete suggestion.
+const AUTOCOMPLETE_TOP_COLOR: Color = Color::Rgb(180, 180, 180);
+
+/// Color used for the disconnected/connecting indicator — muted red.
+const DISCONNECTED_COLOR: Color = Color::Rgb(200, 80, 80);
+
 // ---------------------------------------------------------------------------
 // Command registry
 //
@@ -47,12 +59,31 @@ struct CommandDef {
     description: &'static str,
 }
 
-const COMMANDS: &[CommandDef] = &[
-    CommandDef {
-        name: "/exit",
-        description: "Exit the TUI",
-    },
-];
+const COMMANDS: &[CommandDef] = &[CommandDef {
+    name: "/exit",
+    description: "Exit Ein",
+}];
+
+// ---------------------------------------------------------------------------
+// Connection state
+// ---------------------------------------------------------------------------
+
+/// All events delivered to the main TUI select! loop.
+enum AppEvent {
+    /// A normal event streamed from the server.
+    Server(AgentEvent),
+    /// Connection was established; carries the sender for outbound prompts.
+    Connected(mpsc::Sender<UserInput>),
+    /// Connection was lost or a connection attempt failed.
+    /// `Some(msg)` only when a session was already active (shown in conversation).
+    Disconnected(Option<String>),
+}
+
+/// Whether the TUI currently has a live server connection.
+enum ConnectionStatus {
+    Connecting,
+    Connected,
+}
 
 // ---------------------------------------------------------------------------
 // Display model
@@ -96,10 +127,23 @@ struct App {
     autocomplete_matches: Vec<usize>,
     /// Frame counter incremented by the animation ticker while busy.
     tick: u64,
+    /// Short model name for the status bar (vendor prefix stripped).
+    model_display: String,
+    /// Cumulative tokens used this session (updated on each TokenUsage event).
+    cumulative_tokens: i32,
+    /// Current server connection state; drives status bar and input gating.
+    connection_status: ConnectionStatus,
+    /// Outbound prompt channel; `None` while disconnected.
+    prompt_tx: Option<mpsc::Sender<UserInput>>,
+    /// Last connection error message, shown above the connecting spinner.
+    /// Replaced in-place on each disconnect; cleared when connected.
+    connection_error: Option<String>,
+    /// If `Some`, the startup modal is visible asking to allow access to this directory.
+    pending_cwd_prompt: Option<String>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(model_display: String, pending_cwd_prompt: Option<String>) -> Self {
         Self {
             messages: vec![],
             input: String::new(),
@@ -110,6 +154,12 @@ impl App {
             autocomplete_active: false,
             autocomplete_matches: vec![],
             tick: 0,
+            model_display,
+            cumulative_tokens: 0,
+            connection_status: ConnectionStatus::Connecting,
+            prompt_tx: None,
+            connection_error: None,
+            pending_cwd_prompt,
         }
     }
 }
@@ -168,6 +218,7 @@ fn render(app: &App, frame: &mut Frame) {
         Constraint::Min(0),
         Constraint::Length(input_height),
         Constraint::Length(autocomplete_height),
+        Constraint::Length(1),
     ])
     .split(frame.area());
 
@@ -176,8 +227,8 @@ fn render(app: &App, frame: &mut Frame) {
     // animated spinner so the user can see activity without the input area
     // being taken over.
     let mut lines = build_lines(&app.messages);
+    let frame_idx = (app.tick as usize) % SPINNER.len();
     if app.agent_busy {
-        let frame_idx = (app.tick as usize) % SPINNER.len();
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {} ", SPINNER[frame_idx]),
@@ -187,6 +238,24 @@ fn render(app: &App, frame: &mut Frame) {
                 "thinking",
                 Style::default()
                     .fg(THINKING_COLOR)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    } else if matches!(app.connection_status, ConnectionStatus::Connecting) {
+        if let Some(err) = &app.connection_error {
+            lines.push(Line::from(Span::styled(
+                format!(" {err}"),
+                Style::default().fg(DISCONNECTED_COLOR),
+            )));
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(vec![
+            Span::styled(" ● ", Style::default().fg(DISCONNECTED_COLOR)),
+            Span::styled(SPINNER[frame_idx], Style::default().fg(MUTED_COLOR)),
+            Span::styled(
+                "  connecting to server",
+                Style::default()
+                    .fg(MUTED_COLOR)
                     .add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -241,25 +310,42 @@ fn render(app: &App, frame: &mut Frame) {
         let items: Vec<ListItem> = app
             .autocomplete_matches
             .iter()
-            .map(|&idx| {
+            .enumerate()
+            .map(|(i, &idx)| {
                 let cmd = &COMMANDS[idx];
+                let color = if i == 0 {
+                    AUTOCOMPLETE_TOP_COLOR
+                } else {
+                    MUTED_COLOR
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {}", cmd.name),
-                        Style::default()
-                            .fg(MUTED_COLOR)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  {}", cmd.description),
-                        Style::default().fg(MUTED_COLOR),
-                    ),
+                    Span::styled(format!("  {}", cmd.description), Style::default().fg(color)),
                 ]))
             })
             .collect();
 
         frame.render_widget(List::new(items), layout[2]);
     }
+
+    // --- CWD access modal (overlays everything when present) ---
+    if let Some(cwd) = &app.pending_cwd_prompt {
+        render_cwd_modal(cwd, frame);
+    }
+
+    // --- Status bar ---
+    let status_text = match app.connection_status {
+        ConnectionStatus::Connecting => format!(" model: {}", app.model_display),
+        ConnectionStatus::Connected => format!(
+            " model: {} | tokens: {}",
+            app.model_display, app.cumulative_tokens
+        ),
+    };
+    let status = Paragraph::new(status_text).style(Style::default().fg(MUTED_COLOR));
+    frame.render_widget(status, layout[3]);
 }
 
 /// Converts the message log into a flat list of styled ratatui `Line`s.
@@ -313,6 +399,61 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
 }
 
 // ---------------------------------------------------------------------------
+// CWD modal
+// ---------------------------------------------------------------------------
+
+/// Returns a centered `Rect` of the requested size within `area`.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+/// Renders the startup modal asking the user whether to allow access to the
+/// current working directory. Overlays the entire terminal using `Clear`.
+fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
+    let modal_width = (frame.area().width * 7 / 10).max(50).min(frame.area().width);
+    let modal_height = 7u16;
+    let area = centered_rect(modal_width, modal_height, frame.area());
+
+    // Clear the area behind the modal so the chat pane doesn't show through.
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Allow directory access? ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(INPUT_BORDER_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Truncate the path with an ellipsis if it's wider than the inner area.
+    let max_path_len = inner.width.saturating_sub(2) as usize;
+    let display_path = if cwd.len() > max_path_len && max_path_len > 3 {
+        format!("…{}", &cwd[cwd.len() - max_path_len + 1..])
+    } else {
+        cwd.to_string()
+    };
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!(" {display_path}"),
+            Style::default().fg(AUTOCOMPLETE_TOP_COLOR),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" [Y]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(" Allow   ", Style::default().fg(MUTED_COLOR)),
+            Span::styled("[N]", Style::default().fg(DISCONNECTED_COLOR).add_modifier(Modifier::BOLD)),
+            Span::styled(" Deny", Style::default().fg(MUTED_COLOR)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -326,7 +467,10 @@ fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
     let args: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
     let arg = match name {
-        "Bash" => args.get("command").and_then(|v| v.as_str()).map(String::from),
+        "Bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         "Read" | "Write" => args
             .get("file_path")
             .and_then(|v| v.as_str())
@@ -386,7 +530,104 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             app.agent_busy = false;
             app.auto_scroll = true;
         }
+        Some(ServerEvent::TokenUsage(u)) => {
+            app.cumulative_tokens = u.total_tokens;
+        }
         None => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connection management
+// ---------------------------------------------------------------------------
+
+/// Attempts one full connect → session → bridge cycle.
+///
+/// Returns `Ok(true)` if a session was live at some point (so the caller can
+/// decide whether a subsequent failure warrants a visible error message),
+/// `Ok(false)` if the TUI event channel closed (TUI exited — stop retrying),
+/// or `Err` if the initial connection or handshake failed.
+async fn try_connect(
+    server_addr: &str,
+    cfg: &config::ClientConfig,
+    event_tx: &mpsc::Sender<AppEvent>,
+) -> anyhow::Result<bool> {
+    let channel = Channel::from_shared(server_addr.to_string())?
+        .connect()
+        .await?;
+    let mut grpc_client = AgentClient::new(channel);
+
+    let (prompt_tx, prompt_rx) = mpsc::channel::<UserInput>(8);
+    let prompt_stream = ReceiverStream::new(prompt_rx);
+
+    let response = grpc_client
+        .agent_session(tonic::Request::new(prompt_stream))
+        .await?;
+    let mut server_stream = response.into_inner();
+
+    // Send SessionConfig as the mandatory first message before any prompts.
+    prompt_tx
+        .send(UserInput {
+            input: Some(user_input::Input::Init(SessionConfig {
+                allowed_paths: cfg.allowed_paths.clone(),
+                allowed_hosts: cfg.allowed_hosts.clone(),
+                model: cfg.model.clone(),
+                max_tokens: cfg.max_tokens,
+            })),
+        })
+        .await?;
+
+    // Signal the TUI that the session is live.
+    if event_tx.send(AppEvent::Connected(prompt_tx)).await.is_err() {
+        return Ok(false); // TUI exited
+    }
+
+    // Bridge: forward server events until the stream ends.
+    loop {
+        match server_stream.message().await {
+            Ok(Some(event)) => {
+                if event_tx.send(AppEvent::Server(event)).await.is_err() {
+                    return Ok(false); // TUI exited
+                }
+            }
+            Ok(None) => {
+                // Server closed the stream cleanly.
+                let _ = event_tx.send(AppEvent::Disconnected(None)).await;
+                return Ok(true);
+            }
+            Err(e) => {
+                let _ = event_tx
+                    .send(AppEvent::Disconnected(Some(e.to_string())))
+                    .await;
+                return Ok(true);
+            }
+        }
+    }
+}
+
+/// Background task: connects to the server and retries every 3 s on failure.
+///
+/// Errors on the initial connection attempt are silent (status bar already
+/// shows "Connecting…"). Errors after a live session was established are
+/// forwarded as `Disconnected(Some(...))` so the conversation shows a message.
+async fn connection_manager(
+    server_addr: String,
+    cfg: config::ClientConfig,
+    event_tx: mpsc::Sender<AppEvent>,
+) {
+    loop {
+        match try_connect(&server_addr, &cfg, &event_tx).await {
+            Ok(false) => return, // TUI exited — stop the task
+            Ok(true) => {
+                // Session was live; try_connect already sent the Disconnected event.
+            }
+            Err(_) => {
+                // Initial connection failed; the connecting spinner is enough feedback.
+                // Don't send another Disconnected — that would overwrite the existing
+                // error message shown from the last real session drop.
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 
@@ -401,28 +642,27 @@ async fn main() -> anyhow::Result<()> {
         .nth(1)
         .unwrap_or_else(|| "http://localhost:50051".to_string());
 
-    // Open the gRPC connection and establish a bidirectional streaming session.
-    let channel = Channel::from_shared(server_addr)?.connect().await?;
-    let mut grpc_client = AgentClient::new(channel);
+    // Load (or create) the client config before opening the gRPC session.
+    let mut cfg = load_or_create_config()?;
 
-    let (prompt_tx, prompt_rx) = mpsc::channel::<UserInput>(8);
-    let prompt_stream = ReceiverStream::new(prompt_rx);
+    // Derive a short model name for the status bar by stripping the vendor
+    // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
+    let model_display = cfg
+        .model
+        .split_once('/')
+        .map(|(_, m)| m.to_string())
+        .unwrap_or_else(|| cfg.model.clone());
 
-    let response = grpc_client
-        .agent_session(tonic::Request::new(prompt_stream))
-        .await?;
-    let mut server_stream = response.into_inner();
+    // Collect the cwd for the startup modal (shown before connecting).
+    let cwd_str = std::env::current_dir().ok().map(|p| p.display().to_string());
 
-    // Bridge the gRPC stream into a local mpsc channel so the main select!
-    // loop can receive server events alongside terminal keyboard events.
-    let (event_tx, mut event_rx) = mpsc::channel(64);
-    tokio::spawn(async move {
-        while let Ok(Some(event)) = server_stream.message().await {
-            if event_tx.send(event).await.is_err() {
-                break;
-            }
-        }
-    });
+    let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
+
+    // If there is no cwd to prompt about, spawn the connection manager immediately.
+    // Otherwise it is spawned when the modal is dismissed.
+    if cwd_str.is_none() {
+        tokio::spawn(connection_manager(server_addr.clone(), cfg.clone(), event_tx.clone()));
+    }
 
     // Configure the terminal for raw / alternate-screen rendering.
     enable_raw_mode()?;
@@ -431,7 +671,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let mut app = App::new(model_display, cwd_str);
     let mut term_events = EventStream::new();
     // Ticker drives the thinking spinner; only app.tick is incremented when
     // the agent is busy, so the timer is cheap when idle.
@@ -442,7 +682,7 @@ async fn main() -> anyhow::Result<()> {
 
         tokio::select! {
             _ = ticker.tick() => {
-                if app.agent_busy {
+                if app.agent_busy || matches!(app.connection_status, ConnectionStatus::Connecting) {
                     app.tick = app.tick.wrapping_add(1);
                 }
             }
@@ -450,6 +690,38 @@ async fn main() -> anyhow::Result<()> {
             Some(Ok(event)) = term_events.next() => {
                 let Event::Key(key) = event else { continue };
                 if key.kind != KeyEventKind::Press { continue; }
+
+                // Ctrl-C always exits immediately, even while the agent is busy.
+                if key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    break;
+                }
+
+                // While the startup modal is showing, intercept Y/N and dismiss it.
+                if app.pending_cwd_prompt.is_some() {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            let cwd = app.pending_cwd_prompt.take().unwrap();
+                            cfg.allowed_paths.push(cwd);
+                            tokio::spawn(connection_manager(
+                                server_addr.clone(),
+                                cfg.clone(),
+                                event_tx.clone(),
+                            ));
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
+                            app.pending_cwd_prompt = None;
+                            tokio::spawn(connection_manager(
+                                server_addr.clone(),
+                                cfg.clone(),
+                                event_tx.clone(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
 
                 match key.code {
                     KeyCode::Enter => {
@@ -461,15 +733,26 @@ async fn main() -> anyhow::Result<()> {
                         app.autocomplete_active = false;
                         app.autocomplete_matches.clear();
 
-                        // Handle built-in slash commands before sending to server.
+                        // Slash commands work regardless of connection state.
                         if text == "/exit" {
                             break;
+                        }
+
+                        // Prompts require an active connection.
+                        if app.prompt_tx.is_none() {
+                            continue;
                         }
 
                         app.messages.push(DisplayMessage::User(text.clone()));
                         app.auto_scroll = true;
                         app.agent_busy = true;
-                        let _ = prompt_tx.send(UserInput { prompt: text }).await;
+                        if let Some(tx) = &app.prompt_tx {
+                            let _ = tx
+                                .send(UserInput {
+                                    input: Some(user_input::Input::Prompt(text)),
+                                })
+                                .await;
+                        }
                     }
                     KeyCode::Char(c) => {
                         if !app.agent_busy {
@@ -518,8 +801,23 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            Some(server_event) = event_rx.recv() => {
-                handle_server_event(&mut app, server_event);
+            Some(app_event) = event_rx.recv() => {
+                match app_event {
+                    AppEvent::Server(event) => handle_server_event(&mut app, event),
+                    AppEvent::Connected(sender) => {
+                        app.prompt_tx = Some(sender);
+                        app.connection_status = ConnectionStatus::Connected;
+                        app.cumulative_tokens = 0;
+                        app.connection_error = None;
+                    }
+                    AppEvent::Disconnected(msg) => {
+                        app.connection_error = msg;
+                        app.prompt_tx = None;
+                        app.connection_status = ConnectionStatus::Connecting;
+                        app.agent_busy = false;
+                        app.auto_scroll = true;
+                    }
+                }
             }
         }
     }

@@ -28,7 +28,8 @@
 use anyhow::anyhow;
 use async_openai::{Client, config::OpenAIConfig};
 use ein_proto::ein::{
-    AgentEvent, AgentFinished, ContentDelta, ToolCallEnd, ToolCallStart, agent_event::Event,
+    AgentError, AgentEvent, AgentFinished, ContentDelta, ToolCallEnd, ToolCallStart, TokenUsage,
+    agent_event::Event,
 };
 use ein_tool::Role;
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,25 @@ struct FunctionCall {
 }
 
 // ---------------------------------------------------------------------------
+// Session configuration
+// ---------------------------------------------------------------------------
+
+/// Per-session LLM configuration derived from the client's `SessionConfig`.
+pub struct SessionParams {
+    pub model: String,
+    pub max_tokens: i32,
+}
+
+/// Token counts returned by OpenRouter in each completion response.
+#[derive(Debug, Clone, Deserialize)]
+struct Usage {
+    prompt_tokens: i32,
+    completion_tokens: i32,
+    #[allow(dead_code)]
+    total_tokens: i32,
+}
+
+// ---------------------------------------------------------------------------
 // Agent loop
 // ---------------------------------------------------------------------------
 
@@ -102,18 +122,63 @@ pub async fn run_agent(
     messages: &mut Vec<Value>,
     tool_registry: &mut ToolRegistry,
     client: &Client<OpenAIConfig>,
+    session: &SessionParams,
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
 ) -> anyhow::Result<()> {
+    let mut cumulative_prompt = 0i32;
+    let mut cumulative_completion = 0i32;
+
     loop {
+        println!(
+            "[agent] sending {} messages to {} (max_tokens={})",
+            messages.len(),
+            session.model,
+            session.max_tokens,
+        );
+
         let response: Value = client
             .chat()
             .create_byot(json!({
                 "messages": messages,
-                "model": "anthropic/claude-haiku-4.5",
+                "model": session.model,
                 "tools": tool_registry.schemas()?,
-                "max_tokens": 2500,
+                "max_tokens": session.max_tokens,
             }))
             .await?;
+
+        // Check for API-level error (e.g. 402 insufficient credits).
+        if let Some(error_obj) = response.get("error") {
+            let msg = error_obj
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown API error");
+            eprintln!("[agent] api error: {msg}");
+            let _ = tx
+                .send(Ok(AgentEvent {
+                    event: Some(Event::AgentError(AgentError {
+                        message: msg.to_string(),
+                    })),
+                }))
+                .await;
+            return Ok(());
+        }
+
+        // Extract and accumulate token usage from this response.
+        if let Some(usage_val) = response.get("usage") {
+            if let Ok(usage) = serde_json::from_value::<Usage>(usage_val.clone()) {
+                cumulative_prompt += usage.prompt_tokens;
+                cumulative_completion += usage.completion_tokens;
+                let _ = tx
+                    .send(Ok(AgentEvent {
+                        event: Some(Event::TokenUsage(TokenUsage {
+                            prompt_tokens: cumulative_prompt,
+                            completion_tokens: cumulative_completion,
+                            total_tokens: cumulative_prompt + cumulative_completion,
+                        })),
+                    }))
+                    .await;
+            }
+        }
 
         let choices: Vec<Choice> = response
             .get("choices")
@@ -134,6 +199,8 @@ pub async fn run_agent(
             .unwrap_or_default()
             .to_string();
 
+        println!("[agent] finish_reason={:?}", choice.finish_reason);
+
         match choice.finish_reason {
             FinishReason::ToolCalls => {
                 // Stream any accompanying text before executing tools.
@@ -149,6 +216,7 @@ pub async fn run_agent(
                     for tool_call in tool_calls {
                         match tool_call {
                             ToolCall::Function { id, function, .. } => {
+                                println!("[agent] tool call: {} (id={})", function.name, id);
                                 // Notify the client that a tool is starting.
                                 let _ = tx
                                     .send(Ok(AgentEvent {

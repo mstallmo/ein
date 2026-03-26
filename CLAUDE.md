@@ -54,7 +54,24 @@ There are no tests yet.
 └─────────────────────────────┘          └──────────────────────────────┘
 ```
 
-The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client streams `UserInput` messages; the server streams back `AgentEvent` messages (`ContentDelta`, `ToolCallStart`, `ToolCallEnd`, `AgentFinished`, `AgentError`).
+The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client streams `UserInput` messages; the server streams back `AgentEvent` messages (`ContentDelta`, `ToolCallStart`, `ToolCallEnd`, `AgentFinished`, `AgentError`, `TokenUsage`).
+
+### Session lifecycle
+
+Each connection goes through two phases:
+
+1. **Init** — the client sends a `SessionConfig` as the first `UserInput` (the `init` variant of the `oneof`). The server applies it before starting the prompt loop.
+2. **Prompts** — subsequent `UserInput` messages carry the `prompt` string variant and drive `run_agent`.
+
+`SessionConfig` carries:
+- `allowed_paths` — filesystem paths preopened for WASM plugins via `WasiCtxBuilder::preopened_dir`
+- `allowed_hosts` — hostnames plugins may connect to; resolved to IPs upfront and enforced via `WasiCtxBuilder::socket_addr_check` (empty = inherit network unrestricted)
+- `model` — OpenRouter model ID
+- `max_tokens` — token limit per LLM call
+
+### Client config (`crates/ein-tui/src/config.rs`)
+
+`ClientConfig` is loaded from (or created at) `~/.ein/config.json` on TUI startup. Fields mirror `SessionConfig`. At startup the TUI shows a floating modal asking whether to add the current working directory to `allowed_paths` for that session; this is never persisted to `config.json`.
 
 ### Server (`crates/ein-server/`)
 
@@ -66,32 +83,45 @@ The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client stream
 | `src/tools.rs` | `ToolRegistry` + `WasmTool` — loads and calls WASM plugins |
 | `src/syscalls.rs` | Host functions exposed to WASM plugins (spawn, log, …) |
 
-**Agent loop** (`src/agent.rs`): sends the message history to the LLM, streams `ContentDelta` events for text output, executes each requested `ToolCall` via the registry, appends results to history, and loops until `FinishReason::Stop`.
+**Agent loop** (`src/agent.rs`): sends the message history to the LLM, streams `ContentDelta` events for text output, executes each requested `ToolCall` via the registry, appends results to history, and loops until `FinishReason::Stop`. On each iteration it checks for an `{"error": ...}` response from OpenRouter (e.g. 402 insufficient credits) and emits an `AgentError` event rather than panicking. Cumulative token usage is sent as `TokenUsage` events after each LLM call.
 
-**Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files, instantiates each as a Wasmtime component, and calls `name()`/`schema()` to self-describe. In debug mode this is `./target/wasm32-wasip2/debug/`; in release mode `~/.ein/plugins/`.
+**Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files, instantiates each as a Wasmtime component, and calls `name()`/`schema()` to self-describe. In debug mode this is `./target/wasm32-wasip2/debug/`; in release mode `~/.ein/plugins/`. Each `WasmTool` gets its own `WasiCtx` built from the session's `allowed_paths` and `allowed_hosts`.
 
 ### TUI (`crates/ein-tui/`)
 
-Single file: `src/main.rs`. Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
+Two files: `src/main.rs` (app logic + rendering) and `src/config.rs` (config load/save).
+
+Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 **Layout** (top → bottom):
 1. **Conversation pane** — scrollable message history; streams agent output in real time
 2. **Input area** — single/multi-line text field with character-level wrapping; dark-peach border
 3. **Autocomplete section** — always 3 lines tall; shows slash-command hints when input starts with `/`
+4. **Status bar** — model name (vendor prefix stripped) and cumulative token usage; shows model name only while connecting
 
 **Color palette** — all colors are named constants at the top of `main.rs`:
 - `INPUT_BORDER_COLOR` — muted dark-peach/terracotta border on the input area
 - `TOOL_NAME_COLOR` — steel blue for the `▸ ToolName` tool call indicator
 - `THINKING_COLOR` — soft sky blue for the animated thinking spinner
-- `MUTED_COLOR` — dark grey for secondary text (args, autocomplete descriptions)
+- `MUTED_COLOR` — dark grey for secondary text (args, autocomplete descriptions, connecting animation)
+- `AUTOCOMPLETE_TOP_COLOR` — muted white for the top autocomplete match
+- `DISCONNECTED_COLOR` — muted red for the disconnected `●` icon and error messages
 
 **Thinking animation**: a braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) appears in the conversation pane while the agent is busy, driven by an 80 ms ticker.
 
+**Connecting animation**: when disconnected, a red `●` icon + grey braille spinner + italic "connecting to server" text appears in the conversation pane. If a previous session dropped with an error, the error message is shown above the spinner (replaced in-place, never appended).
+
+**CWD modal**: at startup a centered floating window (`Clear` + bordered `Block`) overlays the TUI asking whether to allow access to the current working directory. Press `Y` to add it to `allowed_paths` for the session; `N`, `Enter`, or `Esc` to skip. The connection manager is spawned only after this modal is dismissed.
+
+**Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string.
+
 **Tool call display**: `▸ ToolName  primary_arg` — for `Bash` the command is shown; for `Read`/`Write` the file path is shown.
 
-**Slash commands**: defined in the `COMMANDS` constant. Currently only `/exit`. Adding a command requires appending a `CommandDef` entry there.
+**Slash commands**: defined in the `COMMANDS` constant. Currently only `/exit`. Adding a command requires appending a `CommandDef` entry there. `/exit` works regardless of connection state.
 
 **Scrolling**: `↑`/`↓` arrows scroll the conversation. `scroll_offset` counts lines up from the bottom; auto-scroll re-engages when the view reaches the bottom again.
+
+**Ctrl-C**: always force-quits, even while the agent is busy.
 
 ### WASM plugin interface (`packages/`)
 
