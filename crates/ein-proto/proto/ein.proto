@@ -63,6 +63,7 @@ message ToolCallEnd {
     string tool_call_id = 1;
     string tool_name    = 2;
     string result       = 3;
+    string metadata     = 4; // JSON forwarded verbatim from the tool result
 }
 
 message AgentFinished {

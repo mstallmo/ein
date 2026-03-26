@@ -323,7 +323,12 @@ pub enum Role {
 pub struct ToolResult {
     role: Role,
     tool_call_id: String,
-    content: String,
+    pub content: String,
+    /// Optional tool-specific data forwarded to the client as-is.
+    /// Not sent to the LLM — the server extracts and routes it separately.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl ToolResult {
@@ -332,6 +337,16 @@ impl ToolResult {
             role: Role::Tool,
             tool_call_id: id.to_string(),
             content,
+            metadata: None,
+        }
+    }
+
+    pub fn with_metadata(id: impl ToString, content: String, metadata: serde_json::Value) -> Self {
+        Self {
+            role: Role::Tool,
+            tool_call_id: id.to_string(),
+            content,
+            metadata: Some(metadata),
         }
     }
 }
