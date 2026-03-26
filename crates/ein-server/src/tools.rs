@@ -33,8 +33,12 @@ impl WasmTool {
                 .expect("failed to preopen dir");
         }
 
-        if allowed_hosts.is_empty() {
+        if allowed_hosts.iter().any(|h| h == "*") {
+            // Wildcard: allow all network connections.
             wasi_builder.inherit_network();
+        } else if allowed_hosts.is_empty() {
+            // Default: deny all network connections.
+            wasi_builder.socket_addr_check(|_, _| Box::pin(async move { false }));
         } else {
             // Resolve hostnames to IPs upfront so the check closure is cheap.
             let mut allowed_ips = collections::HashSet::<IpAddr>::new();

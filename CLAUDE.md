@@ -65,7 +65,7 @@ Each connection goes through two phases:
 
 `SessionConfig` carries:
 - `allowed_paths` — filesystem paths preopened for WASM plugins via `WasiCtxBuilder::preopened_dir`
-- `allowed_hosts` — hostnames plugins may connect to; resolved to IPs upfront and enforced via `WasiCtxBuilder::socket_addr_check` (empty = inherit network unrestricted)
+- `allowed_hosts` — hostnames plugins may connect to; resolved to IPs upfront and enforced via `WasiCtxBuilder::socket_addr_check` (empty = deny all; specific entries = allowlist only; `"*"` = allow all)
 - `model` — OpenRouter model ID
 - `max_tokens` — token limit per LLM call
 
