@@ -210,10 +210,14 @@ enum DisplayMessage {
     User(String),
     /// Streamed text from the agent (may be appended to incrementally).
     AgentText(String),
-    /// A tool invocation: (tool_name, primary_arg). The arg is the most
-    /// meaningful single parameter for display (e.g. the shell command for
-    /// Bash, the file path for Read/Write).
-    ToolCall(String, Option<String>),
+    /// A tool invocation. `arg` is the most meaningful single parameter for
+    /// display (e.g. the shell command for Bash, the file path for Read/Write).
+    /// `output_lines` accumulates stdout streamed in real time (Bash only).
+    ToolCall {
+        name: String,
+        arg: Option<String>,
+        output_lines: Vec<String>,
+    },
     /// An Edit tool invocation with a syntax-highlighted diff for display.
     /// Populated at `ToolCallEnd` once the server has computed the start line.
     EditCall {
@@ -539,7 +543,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::raw(""));
             }
-            DisplayMessage::ToolCall(name, arg) => {
+            DisplayMessage::ToolCall { name, arg, output_lines } => {
                 // "▸ ToolName  arg" — indicator and name in steel blue, arg muted.
                 let mut spans = vec![
                     Span::styled(" ▸ ", Style::default().fg(TOOL_NAME_COLOR)),
@@ -557,6 +561,14 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                     ));
                 }
                 lines.push(Line::from(spans));
+                // Show the last ≤8 lines of streamed output, indented.
+                let skip = output_lines.len().saturating_sub(8);
+                for output_line in output_lines.iter().skip(skip) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {output_line}"),
+                        Style::default().fg(MUTED_COLOR),
+                    )));
+                }
                 lines.push(Line::raw(""));
             }
             DisplayMessage::EditCall {
@@ -771,7 +783,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
         }
         Some(ServerEvent::ToolCallStart(t)) => {
             let (name, arg) = parse_tool_call(&t.tool_name, &t.arguments);
-            app.messages.push(DisplayMessage::ToolCall(name, arg));
+            app.messages.push(DisplayMessage::ToolCall { name, arg, output_lines: vec![] });
             app.auto_scroll = true;
         }
         Some(ServerEvent::ToolCallEnd(t)) => {
@@ -795,7 +807,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
                     let new_lines = parse_lines("new_lines");
 
                     for msg in app.messages.iter_mut().rev() {
-                        if let DisplayMessage::ToolCall(name, file_path_opt) = msg {
+                        if let DisplayMessage::ToolCall { name, arg: file_path_opt, .. } = msg {
                             if name == "Edit" {
                                 let file_path = file_path_opt.clone().unwrap_or_default();
                                 *msg = DisplayMessage::EditCall {
@@ -826,6 +838,12 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
         }
         Some(ServerEvent::TokenUsage(u)) => {
             app.cumulative_tokens = u.total_tokens;
+        }
+        Some(ServerEvent::ToolOutputChunk(c)) => {
+            if let Some(DisplayMessage::ToolCall { output_lines, .. }) = app.messages.last_mut() {
+                output_lines.push(c.output);
+                app.auto_scroll = true;
+            }
         }
         None => {}
     }

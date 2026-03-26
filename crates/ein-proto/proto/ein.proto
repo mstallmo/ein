@@ -33,12 +33,13 @@ message SessionConfig {
 
 message AgentEvent {
     oneof event {
-        ContentDelta   content_delta   = 1;
-        ToolCallStart  tool_call_start = 2;
-        ToolCallEnd    tool_call_end   = 3;
-        AgentFinished  agent_finished  = 4;
-        AgentError     agent_error     = 5;
-        TokenUsage     token_usage     = 6;
+        ContentDelta    content_delta    = 1;
+        ToolCallStart   tool_call_start  = 2;
+        ToolCallEnd     tool_call_end    = 3;
+        AgentFinished   agent_finished   = 4;
+        AgentError      agent_error      = 5;
+        TokenUsage      token_usage      = 6;
+        ToolOutputChunk tool_output_chunk = 7;
     }
 }
 
@@ -72,4 +73,10 @@ message AgentFinished {
 
 message AgentError {
     string message = 1;
+}
+
+// A single line of stdout streamed from a running tool (currently Bash only).
+message ToolOutputChunk {
+    string tool_call_id = 1;
+    string output       = 2;
 }

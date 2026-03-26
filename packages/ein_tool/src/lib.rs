@@ -44,6 +44,10 @@ pub mod tool {
             }
         }
 
+        fn enable_chunk_sender(&self) -> bool {
+            self.enable_chunk_sender()
+        }
+
         fn call(&self, id: String, args: String) -> Result<String, String> {
             let res = self.call(&id, &args).map_err(|err| err.to_string())?;
             serde_json::to_string(&res).map_err(|err| err.to_string())
@@ -75,6 +79,10 @@ pub trait ToolPlugin: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolDef;
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
+
+    fn enable_chunk_sender(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -31,6 +31,10 @@ impl ToolPlugin for BashTool {
             .build()
     }
 
+    fn enable_chunk_sender(&self) -> bool {
+        true
+    }
+
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: BashArgs = serde_json::from_str(&args)?;
 

@@ -228,34 +228,8 @@ pub async fn run_agent(
                                     }))
                                     .await;
 
-                                let (result_str, metadata) = match tool_registry
-                                    .get(function.name.as_str())
-                                {
-                                    Some(tool) => match tool.call(id, &function.arguments).await {
-                                        Ok(res) => {
-                                            let meta = res
-                                                .metadata
-                                                .as_ref()
-                                                .map(|v| v.to_string())
-                                                .unwrap_or_default();
-                                            (res.content, meta)
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[agent] tool '{}' error: {e}",
-                                                function.name
-                                            );
-                                            (format!("Error: {e}"), String::new())
-                                        }
-                                    },
-                                    None => {
-                                        eprintln!("[agent] unknown tool '{}'", function.name);
-                                        (
-                                            format!("Error: tool '{}' not found", function.name),
-                                            String::new(),
-                                        )
-                                    }
-                                };
+                                let (result_str, metadata) =
+                                    handle_tool_call(tx, tool_registry, id, function).await;
 
                                 // Notify the client that the tool finished.
                                 let _ = tx
@@ -296,4 +270,52 @@ pub async fn run_agent(
     }
 
     Ok(())
+}
+
+async fn handle_tool_call(
+    tx: &mpsc::Sender<Result<AgentEvent, Status>>,
+    tool_registry: &mut ToolRegistry,
+    id: &String,
+    function: &FunctionCall,
+) -> (String, String) {
+    match tool_registry.get(function.name.as_str()) {
+        Some(tool) => {
+            match tool.enable_chunk_sender().await {
+                Ok(should_enable_chunk_sender) => {
+                    if should_enable_chunk_sender {
+                        tool.set_chunk_sender(tx.clone(), id.clone())
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[agent] tool '{}' error: {err}", function.name);
+                    return (format!("Error: {err}"), String::new());
+                }
+            };
+
+            match tool.call(id, &function.arguments).await {
+                Ok(res) => {
+                    let meta = res
+                        .metadata
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+
+                    (res.content, meta)
+                }
+                Err(e) => {
+                    eprintln!("[agent] tool '{}' error: {e}", function.name);
+
+                    (format!("Error: {e}"), String::new())
+                }
+            }
+        }
+        None => {
+            eprintln!("[agent] unknown tool '{}'", function.name);
+
+            (
+                format!("Error: tool '{}' not found", function.name),
+                String::new(),
+            )
+        }
+    }
 }
