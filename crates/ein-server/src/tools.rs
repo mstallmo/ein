@@ -1,7 +1,7 @@
 use crate::bindings::Plugin;
 use ein_tool::{ToolDef, ToolResult};
 use serde_json::Value;
-use std::{collections, path::Path};
+use std::{collections, net::IpAddr, path::Path, sync::Arc};
 use tokio::fs;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
@@ -21,13 +21,39 @@ impl WasmTool {
         engine: &Engine,
         linker: &Linker<crate::HarnessState>,
         path: P,
+        allowed_paths: &[String],
+        allowed_hosts: &[String],
     ) -> anyhow::Result<Self> {
-        let wasi = WasiCtx::builder()
-            .inherit_stdio()
-            .inherit_args()
-            .preopened_dir(".", ".", DirPerms::all(), FilePerms::all())
-            .expect("failed to preopen dir")
-            .build();
+        let mut builder = WasiCtx::builder();
+        let mut wasi_builder = builder.inherit_stdio().inherit_args();
+
+        for host_path in allowed_paths {
+            wasi_builder = wasi_builder
+                .preopened_dir(host_path, host_path, DirPerms::all(), FilePerms::all())
+                .expect("failed to preopen dir");
+        }
+
+        if allowed_hosts.is_empty() {
+            wasi_builder.inherit_network();
+        } else {
+            // Resolve hostnames to IPs upfront so the check closure is cheap.
+            let mut allowed_ips = collections::HashSet::<IpAddr>::new();
+            for host in allowed_hosts {
+                // lookup_host requires a host:port pair; use port 0 as placeholder.
+                if let Ok(addrs) = tokio::net::lookup_host(format!("{host}:0")).await {
+                    for addr in addrs {
+                        allowed_ips.insert(addr.ip());
+                    }
+                }
+            }
+            let allowed_ips = Arc::new(allowed_ips);
+            wasi_builder.socket_addr_check(move |addr, _use| {
+                let allowed = allowed_ips.clone();
+                Box::pin(async move { allowed.contains(&addr.ip()) })
+            });
+        }
+
+        let wasi = wasi_builder.build();
 
         let mut store = Store::new(
             &engine,
@@ -92,6 +118,8 @@ impl ToolRegistry {
         engine: &Engine,
         linker: &Linker<crate::HarnessState>,
         plugin_dir: P,
+        allowed_paths: &[String],
+        allowed_hosts: &[String],
     ) -> anyhow::Result<Self> {
         let mut registry = Self::new();
 
@@ -101,7 +129,14 @@ impl ToolRegistry {
             match entries.next_entry().await {
                 Ok(Some(entry)) => {
                     if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
-                        let tool = WasmTool::load(engine, linker, entry.path()).await?;
+                        let tool = WasmTool::load(
+                            engine,
+                            linker,
+                            entry.path(),
+                            allowed_paths,
+                            allowed_hosts,
+                        )
+                        .await?;
                         registry.add_tool(tool);
                     }
                 }

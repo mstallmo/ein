@@ -931,8 +931,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
+ "dirs",
  "ein-proto",
  "ratatui",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",

@@ -7,8 +7,28 @@ service Agent {
     rpc AgentSession(stream UserInput) returns (stream AgentEvent);
 }
 
+// A single message sent by the client during a session.
+// The first message MUST be the `init` variant; all subsequent
+// messages MUST be the `prompt` variant.
 message UserInput {
-    string prompt = 1;
+    oneof input {
+        SessionConfig init   = 1;
+        string        prompt = 2;
+    }
+}
+
+// Sent as the first UserInput to configure the session before any prompts.
+message SessionConfig {
+    // Filesystem paths the WASM plugins are allowed to access.
+    // An empty list means no filesystem access is granted.
+    repeated string allowed_paths = 1;
+    // Network hostnames plugins may connect to.
+    // An empty list means unrestricted network access.
+    repeated string allowed_hosts = 2;
+    // OpenRouter model identifier, e.g. "anthropic/claude-haiku-4.5".
+    string model      = 3;
+    // Maximum tokens the LLM may generate per completion request.
+    int32  max_tokens = 4;
 }
 
 message AgentEvent {
@@ -18,7 +38,15 @@ message AgentEvent {
         ToolCallEnd    tool_call_end   = 3;
         AgentFinished  agent_finished  = 4;
         AgentError     agent_error     = 5;
+        TokenUsage     token_usage     = 6;
     }
+}
+
+// Cumulative token usage for the session, emitted after each LLM call.
+message TokenUsage {
+    int32 prompt_tokens     = 1;
+    int32 completion_tokens = 2;
+    int32 total_tokens      = 3;
 }
 
 message ContentDelta {

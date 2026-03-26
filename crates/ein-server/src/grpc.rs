@@ -27,10 +27,10 @@ use wasmtime::Engine;
 use wasmtime::component::{HasSelf, Linker};
 
 use crate::HarnessState;
-use crate::agent::run_agent;
+use crate::agent::{SessionParams, run_agent};
 use crate::bindings::Plugin;
 use crate::tools::ToolRegistry;
-use ein_proto::ein::{AgentEvent, UserInput, agent_server::Agent};
+use ein_proto::ein::{AgentEvent, UserInput, agent_server::Agent, user_input};
 
 /// gRPC service struct.
 ///
@@ -103,8 +103,60 @@ impl Agent for AgentServer {
         let client = self.client.clone();
 
         tokio::spawn(async move {
-            // Load plugins fresh for each session so sessions are isolated.
-            let registry = ToolRegistry::load(&engine, &linker, &config.plugin_dir).await;
+            println!("[session] new session started");
+            let mut inbound = request.into_inner();
+
+            // --- Phase 1: read and apply SessionConfig ---
+            let session_cfg = match inbound.message().await {
+                Ok(Some(msg)) => match msg.input {
+                    Some(user_input::Input::Init(cfg)) => cfg,
+                    _ => {
+                        let _ = tx
+                            .send(Err(Status::invalid_argument(
+                                "First message must be SessionConfig (init variant)",
+                            )))
+                            .await;
+                        return;
+                    }
+                },
+                Ok(None) => return, // client disconnected immediately
+                Err(e) => {
+                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                    return;
+                }
+            };
+
+            let session_params = SessionParams {
+                model: if session_cfg.model.is_empty() {
+                    "anthropic/claude-haiku-4.5".to_string()
+                } else {
+                    session_cfg.model.clone()
+                },
+                max_tokens: if session_cfg.max_tokens == 0 {
+                    2500
+                } else {
+                    session_cfg.max_tokens
+                },
+            };
+
+            println!(
+                "[session] config: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
+                session_params.model,
+                session_params.max_tokens,
+                session_cfg.allowed_paths,
+                session_cfg.allowed_hosts,
+            );
+
+            // --- Phase 2: load plugins with per-session constraints ---
+            println!("[session] loading plugins from {}", config.plugin_dir.display());
+            let registry = ToolRegistry::load(
+                &engine,
+                &linker,
+                &config.plugin_dir,
+                &session_cfg.allowed_paths,
+                &session_cfg.allowed_hosts,
+            )
+            .await;
             let mut registry = match registry {
                 Ok(r) => r,
                 Err(e) => {
@@ -117,19 +169,35 @@ impl Agent for AgentServer {
                 }
             };
 
+            println!("[session] plugins loaded");
+
+            // --- Phase 3: prompt loop ---
             // `messages` accumulates the full conversation history for this
             // session in OpenAI chat-completion format.
             let mut messages: Vec<Value> = vec![];
-            let mut inbound = request.into_inner();
 
-            while let Ok(Some(user_input)) = inbound.message().await {
-                messages.push(json!({ "role": "user", "content": user_input.prompt }));
-                if let Err(e) = run_agent(&mut messages, &mut registry, &client, &tx).await {
+            while let Ok(Some(msg)) = inbound.message().await {
+                let prompt = match msg.input {
+                    Some(user_input::Input::Prompt(p)) => p,
+                    _ => {
+                        let _ = tx
+                            .send(Err(Status::invalid_argument("Expected prompt after init")))
+                            .await;
+                        break;
+                    }
+                };
+                println!("[session] prompt received ({} chars)", prompt.len());
+                messages.push(json!({ "role": "user", "content": prompt }));
+                if let Err(e) =
+                    run_agent(&mut messages, &mut registry, &client, &session_params, &tx).await
+                {
+                    eprintln!("[session] agent error: {e}");
                     let _ = tx.send(Err(Status::internal(e.to_string()))).await;
                     break;
                 }
             }
 
+            println!("[session] session ended");
             registry.unload().await;
         });
 
