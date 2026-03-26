@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package ein;
+
+service Agent {
+    // Persistent session: client streams prompts, server streams back events.
+    rpc AgentSession(stream UserInput) returns (stream AgentEvent);
+}
+
+message UserInput {
+    string prompt = 1;
+}
+
+message AgentEvent {
+    oneof event {
+        ContentDelta   content_delta   = 1;
+        ToolCallStart  tool_call_start = 2;
+        ToolCallEnd    tool_call_end   = 3;
+        AgentFinished  agent_finished  = 4;
+        AgentError     agent_error     = 5;
+    }
+}
+
+message ContentDelta {
+    string text = 1;
+}
+
+message ToolCallStart {
+    string tool_call_id = 1;
+    string tool_name    = 2;
+    string arguments    = 3;
+}
+
+message ToolCallEnd {
+    string tool_call_id = 1;
+    string tool_name    = 2;
+    string result       = 3;
+}
+
+message AgentFinished {
+    string final_content = 1;
+}
+
+message AgentError {
+    string message = 1;
+}
