@@ -3,10 +3,11 @@ syntax = "proto3";
 package ein;
 
 service Agent {
-    rpc RunAgent(RunAgentRequest) returns (stream AgentEvent);
+    // Persistent session: client streams prompts, server streams back events.
+    rpc AgentSession(stream UserInput) returns (stream AgentEvent);
 }
 
-message RunAgentRequest {
+message UserInput {
     string prompt = 1;
 }
 

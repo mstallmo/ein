@@ -54,7 +54,6 @@ impl WasmTool {
         })
     }
 
-    #[expect(unused)]
     pub async fn cleanup(&mut self) -> anyhow::Result<()> {
         self.handle.resource_drop_async(&mut self.store).await?;
 
@@ -133,5 +132,13 @@ impl ToolRegistry {
 
     pub fn get(&mut self, name: &str) -> Option<&mut WasmTool> {
         self.0.get_mut(name)
+    }
+
+    pub async fn unload(mut self) {
+        for (name, mut tool) in self.0.drain() {
+            if let Err(err) = tool.cleanup().await {
+                eprintln!("Failed to cleanup tool {name}: {err}");
+            }
+        }
     }
 }
