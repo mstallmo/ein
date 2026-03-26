@@ -1,5 +1,7 @@
 mod config;
 
+use std::sync::OnceLock;
+
 use crate::config::load_or_create_config;
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
@@ -17,6 +19,11 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+};
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{Style as SyntectStyle, ThemeSet},
+    parsing::SyntaxSet,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
@@ -45,6 +52,55 @@ const AUTOCOMPLETE_TOP_COLOR: Color = Color::Rgb(180, 180, 180);
 
 /// Color used for the disconnected/connecting indicator — muted red.
 const DISCONNECTED_COLOR: Color = Color::Rgb(200, 80, 80);
+
+/// Color used for added lines in Edit diffs — muted green.
+const DIFF_ADD_COLOR: Color = Color::Rgb(100, 170, 100);
+
+/// Color used for removed lines in Edit diffs — muted red.
+const DIFF_DEL_COLOR: Color = Color::Rgb(190, 90, 90);
+
+/// Maximum number of removed or added lines shown in an Edit diff.
+const DIFF_MAX_LINES: usize = 5;
+
+// ---------------------------------------------------------------------------
+// Syntax highlighting (lazily initialised)
+// ---------------------------------------------------------------------------
+
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme_set() -> &'static ThemeSet {
+    THEME_SET.get_or_init(ThemeSet::load_defaults)
+}
+
+/// Highlight one line of code and return it as a list of coloured `Span`s.
+///
+/// `h` is the stateful highlighter — callers must reuse the same instance
+/// across all lines in a block so multi-line constructs are tracked correctly.
+/// Each `line` should *not* include a trailing newline; one is appended
+/// internally so syntect can detect end-of-line correctly.
+fn highlight_line_spans(h: &mut HighlightLines, ps: &SyntaxSet, line: &str) -> Vec<Span<'static>> {
+    let with_newline = format!("{line}\n");
+    match h.highlight_line(&with_newline, ps) {
+        Ok(ranges) => ranges
+            .iter()
+            .filter_map(|(style, text)| {
+                let t = text.trim_end_matches('\n').to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    let SyntectStyle { foreground: c, .. } = style;
+                    Some(Span::styled(t, Style::default().fg(Color::Rgb(c.r, c.g, c.b))))
+                }
+            })
+            .collect(),
+        Err(_) => vec![Span::raw(line.to_string())],
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Command registry
@@ -106,6 +162,14 @@ enum DisplayMessage {
     /// meaningful single parameter for display (e.g. the shell command for
     /// Bash, the file path for Read/Write).
     ToolCall(String, Option<String>),
+    /// An Edit tool invocation with a syntax-highlighted diff for display.
+    /// Populated at `ToolCallEnd` once the server has computed the start line.
+    EditCall {
+        file_path: String,
+        start_line: u32,
+        old_lines: Vec<String>,
+        new_lines: Vec<String>,
+    },
     /// An error returned by either the agent or the server.
     Error(String),
 }
@@ -392,6 +456,81 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                 lines.push(Line::from(spans));
                 lines.push(Line::raw(""));
             }
+            DisplayMessage::EditCall {
+                file_path,
+                start_line,
+                old_lines,
+                new_lines,
+            } => {
+                // Header: "▸ Edit  file_path"
+                lines.push(Line::from(vec![
+                    Span::styled(" ▸ ", Style::default().fg(TOOL_NAME_COLOR)),
+                    Span::styled(
+                        "Edit",
+                        Style::default()
+                            .fg(TOOL_NAME_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {file_path}"),
+                        Style::default().fg(MUTED_COLOR),
+                    ),
+                ]));
+
+                let ps = syntax_set();
+                let ts = theme_set();
+                let ext = std::path::Path::new(file_path.as_str())
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                let syntax = ps
+                    .find_syntax_by_extension(ext)
+                    .unwrap_or_else(|| ps.find_syntax_plain_text());
+
+                // Removed lines — muted red gutter, syntax-highlighted code.
+                let mut h_old = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                for (i, code) in old_lines.iter().take(DIFF_MAX_LINES).enumerate() {
+                    let line_num = start_line + i as u32;
+                    let mut spans = vec![
+                        Span::styled(
+                            format!("  {:>4} ", line_num),
+                            Style::default().fg(DIFF_DEL_COLOR),
+                        ),
+                        Span::styled("- ", Style::default().fg(DIFF_DEL_COLOR)),
+                    ];
+                    spans.extend(highlight_line_spans(&mut h_old, ps, code));
+                    lines.push(Line::from(spans));
+                }
+                if old_lines.len() > DIFF_MAX_LINES {
+                    lines.push(Line::from(Span::styled(
+                        "       - …",
+                        Style::default().fg(DIFF_DEL_COLOR),
+                    )));
+                }
+
+                // Added lines — muted green gutter, syntax-highlighted code.
+                let mut h_new = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                for (i, code) in new_lines.iter().take(DIFF_MAX_LINES).enumerate() {
+                    let line_num = start_line + i as u32;
+                    let mut spans = vec![
+                        Span::styled(
+                            format!("  {:>4} ", line_num),
+                            Style::default().fg(DIFF_ADD_COLOR),
+                        ),
+                        Span::styled("+ ", Style::default().fg(DIFF_ADD_COLOR)),
+                    ];
+                    spans.extend(highlight_line_spans(&mut h_new, ps, code));
+                    lines.push(Line::from(spans));
+                }
+                if new_lines.len() > DIFF_MAX_LINES {
+                    lines.push(Line::from(Span::styled(
+                        "       + …",
+                        Style::default().fg(DIFF_ADD_COLOR),
+                    )));
+                }
+
+                lines.push(Line::raw(""));
+            }
             DisplayMessage::Error(msg) => {
                 lines.push(Line::from(Span::styled(
                     format!("Error: {}", msg),
@@ -478,9 +617,12 @@ fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
 /// Extracts the most useful display argument for a known tool from its raw
 /// JSON arguments string. Returns `(tool_name, Option<primary_arg>)`.
 ///
-/// - `Bash`  → `command` field
-/// - `Read` / `Write` → `file_path` field
-/// - unknown → no arg shown
+/// - `Bash`        → `command` field
+/// - `Read` / `Write` / `Edit` → `file_path` field
+/// - unknown       → no arg shown
+///
+/// For `Edit` this is a temporary placeholder shown while the tool runs; it is
+/// replaced by a full `EditCall` message when `ToolCallEnd` arrives.
 fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
     let args: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
@@ -489,7 +631,7 @@ fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
             .get("command")
             .and_then(|v| v.as_str())
             .map(String::from),
-        "Read" | "Write" => args
+        "Read" | "Write" | "Edit" => args
             .get("file_path")
             .and_then(|v| v.as_str())
             .map(String::from),
@@ -532,8 +674,44 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             app.messages.push(DisplayMessage::ToolCall(name, arg));
             app.auto_scroll = true;
         }
-        Some(ServerEvent::ToolCallEnd(_)) => {
-            // Tool results are surfaced implicitly through the agent's next ContentDelta.
+        Some(ServerEvent::ToolCallEnd(t)) => {
+            // For Edit calls the tool returns diff metadata; replace the
+            // ToolCall placeholder that was pushed at ToolCallStart.
+            if t.tool_name == "Edit" && !t.metadata.is_empty() {
+                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&t.metadata) {
+                    let start_line = meta
+                        .get("start_line")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as u32;
+                    let parse_lines = |key: &str| -> Vec<String> {
+                        meta.get(key)
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    };
+                    let old_lines = parse_lines("old_lines");
+                    let new_lines = parse_lines("new_lines");
+
+                    for msg in app.messages.iter_mut().rev() {
+                        if let DisplayMessage::ToolCall(name, file_path_opt) = msg {
+                            if name == "Edit" {
+                                let file_path = file_path_opt.clone().unwrap_or_default();
+                                *msg = DisplayMessage::EditCall {
+                                    file_path,
+                                    start_line,
+                                    old_lines,
+                                    new_lines,
+                                };
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
         Some(ServerEvent::AgentFinished(f)) => {
             if !f.final_content.is_empty() {

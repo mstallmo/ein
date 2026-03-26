@@ -19,6 +19,10 @@ echo "Building write plugin..."
 cargo build --release -p ein_write --target wasm32-wasip2
 echo "Done"
 
+echo "Building edit plugin..."
+cargo build --release -p ein_edit --target wasm32-wasip2
+echo "Done"
+
 ############################
 # Install                  #
 ############################
@@ -38,4 +42,8 @@ echo "Done"
 
 echo "Installing write plugin..."
 cp target/wasm32-wasip2/release/ein_write.wasm ~/.ein/plugins
+echo "Done"
+
+echo "Installing edit plugin..."
+cp target/wasm32-wasip2/release/ein_edit.wasm ~/.ein/plugins
 echo "Done"

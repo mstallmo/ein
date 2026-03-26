@@ -28,7 +28,7 @@
 use anyhow::anyhow;
 use async_openai::{Client, config::OpenAIConfig};
 use ein_proto::ein::{
-    AgentError, AgentEvent, AgentFinished, ContentDelta, ToolCallEnd, ToolCallStart, TokenUsage,
+    AgentError, AgentEvent, AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart,
     agent_event::Event,
 };
 use ein_tool::Role;
@@ -228,17 +228,34 @@ pub async fn run_agent(
                                     }))
                                     .await;
 
-                                let Some(tool) = tool_registry.get(function.name.as_str()) else {
-                                    return Err(anyhow!("Missing tool {}", function.name));
+                                let (result_str, metadata) = match tool_registry
+                                    .get(function.name.as_str())
+                                {
+                                    Some(tool) => match tool.call(id, &function.arguments).await {
+                                        Ok(res) => {
+                                            let meta = res
+                                                .metadata
+                                                .as_ref()
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_default();
+                                            (res.content, meta)
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[agent] tool '{}' error: {e}",
+                                                function.name
+                                            );
+                                            (format!("Error: {e}"), String::new())
+                                        }
+                                    },
+                                    None => {
+                                        eprintln!("[agent] unknown tool '{}'", function.name);
+                                        (
+                                            format!("Error: tool '{}' not found", function.name),
+                                            String::new(),
+                                        )
+                                    }
                                 };
-
-                                let res = tool.call(id, &function.arguments).await?;
-                                let res_value = serde_json::to_value(&res)?;
-                                let result_str = res_value
-                                    .get("content")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
 
                                 // Notify the client that the tool finished.
                                 let _ = tx
@@ -246,14 +263,19 @@ pub async fn run_agent(
                                         event: Some(Event::ToolCallEnd(ToolCallEnd {
                                             tool_call_id: id.clone(),
                                             tool_name: function.name.clone(),
-                                            result: result_str,
+                                            result: result_str.clone(),
+                                            metadata,
                                         })),
                                     }))
                                     .await;
 
                                 // Append the tool result so the LLM sees it on
                                 // the next iteration.
-                                messages.push(res_value);
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": id,
+                                    "content": result_str,
+                                }));
                             }
                         }
                     }

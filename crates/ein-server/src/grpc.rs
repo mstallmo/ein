@@ -176,6 +176,23 @@ impl Agent for AgentServer {
             // session in OpenAI chat-completion format.
             let mut messages: Vec<Value> = vec![];
 
+            // Prepend a system message so the model knows which filesystem
+            // paths the file tools (Read, Write, Edit) are allowed to access.
+            if !session_cfg.allowed_paths.is_empty() {
+                let paths_list = session_cfg
+                    .allowed_paths
+                    .iter()
+                    .map(|p| format!("- {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                messages.push(json!({
+                    "role": "system",
+                    "content": format!(
+                        "The following filesystem paths are accessible to file tools (Read, Write, Edit):\n{paths_list}"
+                    ),
+                }));
+            }
+
             while let Ok(Some(msg)) = inbound.message().await {
                 let prompt = match msg.input {
                     Some(user_input::Input::Prompt(p)) => p,

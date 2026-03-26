@@ -31,7 +31,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add wasm32-wasip2
 ```
 
-**Build the WASM plugins** (Bash, Read, Write tools)
+**Build the WASM plugins** (Bash, Read, Write, Edit tools)
 ```bash
 ./scripts/build_install_plugins.sh
 ```
@@ -95,8 +95,12 @@ While the agent is working, an animated indicator appears in the chat panel. Too
 
 ```
  ▸ Bash  ls -la
+ ▸ Read  src/main.rs
  ▸ Write  src/main.rs
+ ▸ Edit  src/main.rs
 ```
+
+`Edit` calls display a syntax-highlighted diff showing the removed and added lines.
 
 The status bar at the bottom shows the active model and cumulative token usage for the session.
 
@@ -113,6 +117,7 @@ Tools are WASM components loaded at startup. Three are included out of the box:
 | `Bash` | Execute shell commands |
 | `Read` | Read a file from the filesystem |
 | `Write` | Write content to a file |
+| `Edit` | Replace a specific string in a file with new content |
 
 ### Adding a tool
 
@@ -132,6 +137,7 @@ packages/
   ein_bash/     Bash tool plugin
   ein_read/     Read tool plugin
   ein_write/    Write tool plugin
+  ein_edit/     Edit tool plugin
 ```
 
 The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (model, token limit, sandbox constraints), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output.
