@@ -115,7 +115,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 **Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string.
 
-**Tool call display**: `▸ ToolName  primary_arg` — for `Bash` the command is shown; for `Read`/`Write` the file path is shown.
+**Tool call display**: `▸ ToolName  primary_arg` — for `Bash` the command is shown; for `Read`/`Write`/`Edit` the file path is shown. `Edit` additionally renders a syntax-highlighted diff (up to `DIFF_MAX_LINES` = 5 lines each of removed/added content) using `syntect` with the `base16-ocean.dark` theme.
 
 **Slash commands**: defined in the `COMMANDS` constant. Currently only `/exit`. Adding a command requires appending a `CommandDef` entry there. `/exit` works regardless of connection state.
 
@@ -130,6 +130,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 | `ein_bash` | `Bash` | Executes shell commands via the `spawn` syscall |
 | `ein_read` | `Read` | Reads a file from the filesystem |
 | `ein_write` | `Write` | Writes content to a file |
+| `ein_edit` | `Edit` | Replaces an exact string in a file with new content; returns `metadata` with `start_line`, `old_lines`, and `new_lines` for the TUI diff view |
 
 Plugins implement the `ToolPlugin` trait from `packages/ein_tool/` and declare their name, description, and JSON parameter schema via `ToolDef`. They are compiled to `wasm32-wasip2`.
 
