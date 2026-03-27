@@ -18,7 +18,6 @@
 use std::sync::Arc;
 use std::{env, process};
 
-use async_openai::{Client, config::OpenAIConfig};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -29,18 +28,19 @@ use wasmtime::component::{HasSelf, Linker};
 use crate::HarnessState;
 use crate::agent::{SessionParams, run_agent};
 use crate::bindings::Plugin;
+use crate::model_client::{CompletionProvider, load_model_client};
 use crate::tools::ToolRegistry;
 use ein_proto::ein::{AgentEvent, UserInput, agent_server::Agent, user_input};
 
 /// gRPC service struct.
 ///
-/// Holds shared, read-only resources (Wasmtime engine, linker, OpenRouter
-/// client) behind `Arc`s so they can be cheaply cloned into each session task.
+/// Holds shared, read-only resources (Wasmtime engine, linker, model client)
+/// behind `Arc`s so they can be cheaply cloned into each session task.
 pub struct AgentServer {
     engine: Arc<Engine>,
     linker: Arc<Linker<HarnessState>>,
     config: Arc<crate::EinConfig>,
-    client: Arc<Client<OpenAIConfig>>,
+    model: Arc<dyn CompletionProvider>,
 }
 
 impl AgentServer {
@@ -49,8 +49,9 @@ impl AgentServer {
     /// - Initialises the Wasmtime engine and pre-populates the component
     ///   linker with WASI and the Ein plugin host functions.
     /// - Reads `OPENROUTER_API_KEY` (required) and `OPENROUTER_BASE_URL`
-    ///   (optional) from the environment.
-    pub fn new() -> anyhow::Result<Self> {
+    ///   (optional) from the environment and passes them to the model client
+    ///   plugin constructor.
+    pub async fn new() -> anyhow::Result<Self> {
         let engine = Engine::default();
         let mut linker: Linker<HarnessState> = Linker::new(&engine);
         // Register standard WASI p2 host functions.
@@ -66,17 +67,23 @@ impl AgentServer {
             process::exit(1);
         });
 
-        let config = OpenAIConfig::new()
-            .with_api_base(base_url)
-            .with_api_key(api_key);
+        let config = Arc::new(crate::EinConfig::default());
 
-        let client = Client::with_config(config);
+        let model_config_json = json!({
+            "api_key": api_key,
+            "base_url": base_url,
+        })
+        .to_string();
+
+        let model = Arc::new(
+            load_model_client(&engine, &config.model_client_dir, &model_config_json).await?,
+        );
 
         Ok(Self {
             engine: Arc::new(engine),
             linker: Arc::new(linker),
-            config: Arc::new(crate::EinConfig::default()),
-            client: Arc::new(client),
+            config,
+            model,
         })
     }
 }
@@ -100,7 +107,7 @@ impl Agent for AgentServer {
         let engine = self.engine.clone();
         let linker = self.linker.clone();
         let config = self.config.clone();
-        let client = self.client.clone();
+        let model = self.model.clone();
 
         tokio::spawn(async move {
             println!("[session] new session started");
@@ -147,7 +154,7 @@ impl Agent for AgentServer {
                 session_cfg.allowed_hosts,
             );
 
-            // --- Phase 2: load plugins with per-session constraints ---
+            // --- Phase 2: load tool plugins with per-session constraints ---
             println!("[session] loading plugins from {}", config.plugin_dir.display());
             let registry = ToolRegistry::load(
                 &engine,
@@ -206,7 +213,8 @@ impl Agent for AgentServer {
                 println!("[session] prompt received ({} chars)", prompt.len());
                 messages.push(json!({ "role": "user", "content": prompt }));
                 if let Err(e) =
-                    run_agent(&mut messages, &mut registry, &client, &session_params, &tx).await
+                    run_agent(&mut messages, &mut registry, model.as_ref(), &session_params, &tx)
+                        .await
                 {
                     eprintln!("[session] agent error: {e}");
                     let _ = tx.send(Err(Status::internal(e.to_string()))).await;

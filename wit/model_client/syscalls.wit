@@ -1,0 +1,9 @@
+package ein:model-client;
+
+interface host {
+    log: func(msg: string);
+    /// Perform an outgoing HTTP request.
+    /// request-json: JSON-serialised HttpRequest { method, url, headers, body }.
+    /// Returns a JSON-serialised HttpResponse { status, body }, or an error string.
+    http-request: func(request-json: string) -> result<string, string>;
+}

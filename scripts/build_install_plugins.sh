@@ -1,7 +1,7 @@
 #!/bin/bash
 
-ROOT_DIR=~/.ein
-PLUGIN_INSTALL_DIR=${ROOT_DIR}/plugins
+TOOLS_DIR=~/.ein/plugins/tools
+MODEL_CLIENTS_DIR=~/.ein/plugins/model_clients
 
 ############################
 # BUILD                    #
@@ -23,27 +23,32 @@ echo "Building edit plugin..."
 cargo build --release -p ein_edit --target wasm32-wasip2
 echo "Done"
 
+echo "Building openrouter model client plugin..."
+cargo build --release -p ein_openrouter --target wasm32-wasip2
+echo "Done"
+
 ############################
 # Install                  #
 ############################
 
-
-if [ ! -d "$PLUGIN_INSTALL_DIR" ]; then
-    mkdir -p "$PLUGIN_INSTALL_DIR"
-fi
+mkdir -p "$TOOLS_DIR" "$MODEL_CLIENTS_DIR"
 
 echo "Installing bash plugin..."
-cp target/wasm32-wasip2/release/ein_bash.wasm ~/.ein/plugins
+cp target/wasm32-wasip2/release/ein_bash.wasm "$TOOLS_DIR"
 echo "Done"
 
 echo "Installing read plugin..."
-cp target/wasm32-wasip2/release/ein_read.wasm ~/.ein/plugins
+cp target/wasm32-wasip2/release/ein_read.wasm "$TOOLS_DIR"
 echo "Done"
 
 echo "Installing write plugin..."
-cp target/wasm32-wasip2/release/ein_write.wasm ~/.ein/plugins
+cp target/wasm32-wasip2/release/ein_write.wasm "$TOOLS_DIR"
 echo "Done"
 
 echo "Installing edit plugin..."
-cp target/wasm32-wasip2/release/ein_edit.wasm ~/.ein/plugins
+cp target/wasm32-wasip2/release/ein_edit.wasm "$TOOLS_DIR"
+echo "Done"
+
+echo "Installing openrouter model client plugin..."
+cp target/wasm32-wasip2/release/ein_openrouter.wasm "$MODEL_CLIENTS_DIR"
 echo "Done"

@@ -16,12 +16,16 @@
 //! # Plugin loading
 //!
 //! In debug builds, WASM plugins are loaded from `./target/wasm32-wasip2/debug/`.
-//! In release builds they are loaded from `~/.ein/plugins/`.
+//! In release builds tool plugins are loaded from `~/.ein/plugins/tools/` and
+//! model client plugins from `~/.ein/plugins/model_clients/`.
 //! Run `./scripts/build_install_plugins.sh` to compile and install them.
 
 mod agent;
 mod bindings;
 mod grpc;
+mod model_client;
+mod model_client_bindings;
+mod model_client_syscalls;
 mod syscalls;
 mod tools;
 
@@ -33,8 +37,9 @@ use tokio::sync::mpsc;
 use tonic::{Status, transport::Server};
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::WasiHttpCtx;
 
-/// Shared state threaded through each Wasmtime `Store`.
+/// Shared state threaded through each Wasmtime `Store` for tool plugins.
 ///
 /// Every WASM plugin instance gets its own `Store<HarnessState>`, giving it
 /// an isolated WASI context and resource table.
@@ -57,13 +62,47 @@ impl WasiView for HarnessState {
     }
 }
 
+/// Shared state threaded through each Wasmtime `Store` for model client plugins.
+///
+/// Simpler than `HarnessState` — no chunk streaming. Includes `WasiHttpCtx`
+/// so that `reqwest` (used by `async-openai`) can make outgoing HTTP requests
+/// via `wasi:http/outgoing-handler`.
+pub struct ModelClientHarnessState {
+    pub resource_table: ResourceTable,
+    pub wasi_ctx: WasiCtx,
+    pub http_ctx: WasiHttpCtx,
+    /// Shared reqwest client for the `http_request` host syscall.
+    pub http_client: reqwest::Client,
+}
+
+impl WasiView for ModelClientHarnessState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
+    }
+}
+
+impl wasmtime_wasi_http::WasiHttpView for ModelClientHarnessState {
+    fn ctx(&mut self) -> &mut WasiHttpCtx {
+        &mut self.http_ctx
+    }
+
+    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
+        &mut self.resource_table
+    }
+}
+
 /// Top-level runtime configuration for the Ein server.
 #[derive(Debug, Clone)]
 pub struct EinConfig {
     #[expect(unused)]
     ein_dir: PathBuf,
-    /// Directory from which `.wasm` plugin files are loaded.
+    /// Directory from which tool `.wasm` plugin files are loaded.
     pub plugin_dir: PathBuf,
+    /// Directory from which model client `.wasm` plugin files are loaded.
+    pub model_client_dir: PathBuf,
 }
 
 impl Default for EinConfig {
@@ -74,15 +113,20 @@ impl Default for EinConfig {
 
         // Use the local debug output directory during development so plugins
         // don't need to be installed after every rebuild.
-        let plugin_dir = if cfg!(debug_assertions) {
-            PathBuf::from("./target/wasm32-wasip2/debug")
+        let (plugin_dir, model_client_dir) = if cfg!(debug_assertions) {
+            let debug = PathBuf::from("./target/wasm32-wasip2/debug");
+            (debug.clone(), debug)
         } else {
-            ein_dir.join("plugins")
+            (
+                ein_dir.join("plugins").join("tools"),
+                ein_dir.join("plugins").join("model_clients"),
+            )
         };
 
         Self {
             ein_dir,
             plugin_dir,
+            model_client_dir,
         }
     }
 }
@@ -100,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let addr = format!("0.0.0.0:{}", args.port).parse()?;
 
-    let server = AgentServer::new()?;
+    let server = AgentServer::new().await?;
 
     println!("ein-server listening on {addr}");
 

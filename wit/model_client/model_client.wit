@@ -1,0 +1,12 @@
+package ein:model-client;
+
+world model-client {
+    import host;
+
+    export model-client: interface {
+        resource model-client {
+            constructor(config-json: string);
+            complete: func(request-json: string) -> result<string, string>;
+        }
+    }
+}
