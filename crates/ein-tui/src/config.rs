@@ -9,6 +9,12 @@ pub struct ClientConfig {
     pub model: String,
     #[serde(default = "ClientConfig::default_max_tokens")]
     pub max_tokens: i32,
+    /// Override the model client API endpoint. When absent, the plugin uses its own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// API key for the configured model client (e.g. an OpenRouter key).
+    #[serde(default)]
+    pub api_key: String,
 }
 
 impl ClientConfig {
@@ -27,6 +33,8 @@ impl Default for ClientConfig {
             allowed_hosts: vec![],
             model: Self::default_model(),
             max_tokens: Self::default_max_tokens(),
+            base_url: None,
+            api_key: String::new(),
         }
     }
 }

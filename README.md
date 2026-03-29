@@ -38,12 +38,23 @@ rustup target add wasm32-wasip2
 
 > In debug builds, plugins are loaded automatically from `./target/wasm32-wasip2/debug/` — no installation needed.
 
+### Configure credentials
+
+Before running, add your OpenRouter API key to `~/.ein/config.json` (created automatically on first TUI launch):
+
+```json
+{
+  "api_key": "sk-or-...",
+  "base_url": "https://openrouter.ai/api/v1"
+}
+```
+
 ### Running
 
 Start the server in one terminal:
 
 ```bash
-OPENROUTER_API_KEY=<your-key> cargo run -p ein-server
+cargo run -p ein-server
 ```
 
 Start the TUI client in another:
@@ -60,10 +71,12 @@ cargo run -p ein-tui -- http://my-server:50051
 
 ## Configuration
 
-The TUI stores its configuration at `~/.ein/config.json`. The file is created with defaults on first run.
+The TUI stores its configuration at `~/.ein/config.json`. The file is created with defaults on first run. Edit it to add your credentials:
 
 ```json
 {
+  "api_key": "sk-or-...",
+  "base_url": "https://openrouter.ai/api/v1",
   "model": "anthropic/claude-haiku-4.5",
   "max_tokens": 2500,
   "allowed_paths": [],
@@ -73,12 +86,16 @@ The TUI stores its configuration at `~/.ein/config.json`. The file is created wi
 
 | Field | Description |
 |-------|-------------|
-| `model` | OpenRouter model ID sent to the server each session |
+| `api_key` | API key for the model client plugin (e.g. your OpenRouter key) |
+| `base_url` | Model API endpoint; restricts outbound connections to that host (empty = deny all; `"*"` = allow all) |
+| `model` | OpenRouter model ID |
 | `max_tokens` | Maximum tokens per LLM response |
 | `allowed_paths` | Filesystem paths the WASM tools may read/write (preopened for every session) |
 | `allowed_hosts` | Hostnames the WASM tools may connect to (empty = deny all; `"*"` = allow all) |
 
-`allowed_paths` and `allowed_hosts` act as a persistent allowlist. In addition, at startup the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
+`allowed_paths` and `allowed_hosts` act as a persistent allowlist for tool plugins. In addition, at startup the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
+
+Changes to `config.json` are picked up automatically while the TUI is running — credentials and model settings update without restarting.
 
 ## Usage
 
@@ -140,4 +157,4 @@ packages/
   ein_edit/     Edit tool plugin
 ```
 
-The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (model, token limit, sandbox constraints), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output.
+The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (credentials, model, token limit, sandbox constraints), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output. A `config_update` message variant allows the TUI to push credential/model changes to a live session without reconnecting.

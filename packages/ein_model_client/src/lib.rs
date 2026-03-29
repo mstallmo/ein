@@ -1,6 +1,8 @@
 pub mod syscalls {
-    pub use crate::model_client::ein::model_client::host::{http_request, log};
+    pub use crate::model_client::ein::model_client::host::*;
 }
+
+pub use ein_http::{HttpRequest, HttpResponse};
 
 #[doc(hidden)]
 pub mod model_client {
@@ -145,113 +147,4 @@ pub struct Usage {
     pub completion_tokens: i32,
     #[allow(dead_code)]
     pub total_tokens: i32,
-}
-
-// ---------------------------------------------------------------------------
-// HTTP types and helpers for the http_request syscall
-// ---------------------------------------------------------------------------
-
-/// A pending HTTP request. Build one with [`HttpRequest::post`] (or the other
-/// method constructors) and send it with [`HttpRequest::send`].
-///
-/// # Example
-/// ```rust,ignore
-/// let resp = HttpRequest::post("https://api.example.com/v1/chat/completions")
-///     .bearer_auth(&api_key)
-///     .json(&body)
-///     .send()?;
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpRequest {
-    pub method: String,
-    pub url: String,
-    pub headers: std::collections::HashMap<String, String>,
-    pub body: String,
-}
-
-impl HttpRequest {
-    fn new(method: impl Into<String>, url: impl Into<String>) -> Self {
-        Self {
-            method: method.into(),
-            url: url.into(),
-            headers: std::collections::HashMap::new(),
-            body: String::new(),
-        }
-    }
-
-    pub fn get(url: impl Into<String>) -> Self {
-        Self::new("GET", url)
-    }
-
-    pub fn post(url: impl Into<String>) -> Self {
-        Self::new("POST", url)
-    }
-
-    pub fn put(url: impl Into<String>) -> Self {
-        Self::new("PUT", url)
-    }
-
-    pub fn delete(url: impl Into<String>) -> Self {
-        Self::new("DELETE", url)
-    }
-
-    /// Add an arbitrary header.
-    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into());
-        self
-    }
-
-    /// Add a `Content-Type: application/json` header.
-    pub fn content_type_json(self) -> Self {
-        self.header("Content-Type", "application/json")
-    }
-
-    /// Add an `Authorization: Bearer <token>` header.
-    pub fn bearer_auth(self, token: impl Into<String>) -> Self {
-        self.header("Authorization", format!("Bearer {}", token.into()))
-    }
-
-    /// Serialize `value` as JSON, set `Content-Type: application/json`, and
-    /// use the result as the request body.
-    pub fn json<T: Serialize>(mut self, value: &T) -> anyhow::Result<Self> {
-        self.body = serde_json::to_string(value)?;
-        Ok(self.content_type_json())
-    }
-
-    /// Set a raw string body without changing headers.
-    pub fn body(mut self, body: impl Into<String>) -> Self {
-        self.body = body.into();
-        self
-    }
-
-    /// Dispatch the request via the host `http_request` syscall and return the
-    /// parsed [`HttpResponse`].
-    ///
-    /// # Errors
-    /// Returns an error if the syscall fails or if the response cannot be
-    /// deserialised. Does **not** treat non-2xx status codes as errors — check
-    /// [`HttpResponse::status`] yourself.
-    pub fn send(self) -> anyhow::Result<HttpResponse> {
-        let req_json = serde_json::to_string(&self)?;
-        let resp_json = syscalls::http_request(&req_json).map_err(|e| anyhow::anyhow!(e))?;
-        Ok(serde_json::from_str(&resp_json)?)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: String,
-}
-
-impl HttpResponse {
-    /// Returns `true` for 2xx status codes.
-    pub fn is_success(&self) -> bool {
-        self.status >= 200 && self.status < 300
-    }
-
-    /// Deserialise the response body as JSON.
-    pub fn json<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<T> {
-        Ok(serde_json::from_str(&self.body)?)
-    }
 }

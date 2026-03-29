@@ -132,15 +132,18 @@ fn theme_set() -> &'static ThemeSet {
 /// internally so syntect can detect end-of-line correctly.
 fn highlight_line_spans(h: &mut HighlightLines, ps: &SyntaxSet, line: &str) -> Vec<Span<'static>> {
     let with_newline = format!("{line}\n");
+
     match h.highlight_line(&with_newline, ps) {
         Ok(ranges) => ranges
             .iter()
             .filter_map(|(style, text)| {
                 let t = text.trim_end_matches('\n').to_string();
+
                 if t.is_empty() {
                     None
                 } else {
                     let SyntectStyle { foreground: c, .. } = style;
+
                     Some(Span::styled(
                         t,
                         Style::default().fg(Color::Rgb(c.r, c.g, c.b)),
@@ -189,6 +192,8 @@ enum AppEvent {
     /// Connection was lost or a connection attempt failed.
     /// `Some(msg)` only when a session was already active (shown in conversation).
     Disconnected(Option<String>),
+    /// `~/.ein/config.json` changed on disk; carries the freshly parsed config.
+    ConfigChanged(config::ClientConfig),
 }
 
 /// Whether the TUI currently has a live server connection.
@@ -477,13 +482,16 @@ fn render(app: &App, frame: &mut Frame) {
 /// Converts the message log into a flat list of styled ratatui `Line`s.
 fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
+
     for msg in messages {
         match msg {
             DisplayMessage::Header { cwd } => {
                 lines.push(Line::raw(""));
+
                 for (term_row, pair) in CORGI_PIXELS.chunks(2).enumerate() {
                     let upper = &pair[0];
                     let lower = &pair[1];
+
                     let mut spans: Vec<Span<'static>> = upper
                         .iter()
                         .zip(lower.iter())
@@ -497,6 +505,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                             }
                         })
                         .collect();
+
                     match term_row {
                         1 => {
                             spans.push(Span::styled(
@@ -526,8 +535,10 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                         }
                         _ => {}
                     }
+
                     lines.push(Line::from(spans));
                 }
+
                 lines.push(Line::raw(""));
             }
             DisplayMessage::User(text) => {
@@ -543,7 +554,11 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::raw(""));
             }
-            DisplayMessage::ToolCall { name, arg, output_lines } => {
+            DisplayMessage::ToolCall {
+                name,
+                arg,
+                output_lines,
+            } => {
                 // "▸ ToolName  arg" — indicator and name in steel blue, arg muted.
                 let mut spans = vec![
                     Span::styled(" ▸ ", Style::default().fg(TOOL_NAME_COLOR)),
@@ -554,13 +569,16 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ];
+
                 if let Some(a) = arg {
                     spans.push(Span::styled(
                         format!("  {}", a),
                         Style::default().fg(MUTED_COLOR),
                     ));
                 }
+
                 lines.push(Line::from(spans));
+
                 // Show the last ≤8 lines of streamed output, indented.
                 let skip = output_lines.len().saturating_sub(8);
                 for output_line in output_lines.iter().skip(skip) {
@@ -569,6 +587,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                         Style::default().fg(MUTED_COLOR),
                     )));
                 }
+
                 lines.push(Line::raw(""));
             }
             DisplayMessage::EditCall {
@@ -634,6 +653,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                     spans.extend(highlight_line_spans(&mut h_new, ps, code));
                     lines.push(Line::from(spans));
                 }
+
                 if new_lines.len() > DIFF_MAX_LINES {
                     lines.push(Line::from(Span::styled(
                         "       + …",
@@ -663,6 +683,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
+
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
@@ -738,6 +759,7 @@ fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
 fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
     let args: serde_json::Value =
         serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+
     let arg = match name {
         "Bash" => args
             .get("command")
@@ -749,6 +771,7 @@ fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
             .map(String::from),
         _ => None,
     };
+
     (name.to_string(), arg)
 }
 
@@ -783,7 +806,12 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
         }
         Some(ServerEvent::ToolCallStart(t)) => {
             let (name, arg) = parse_tool_call(&t.tool_name, &t.arguments);
-            app.messages.push(DisplayMessage::ToolCall { name, arg, output_lines: vec![] });
+
+            app.messages.push(DisplayMessage::ToolCall {
+                name,
+                arg,
+                output_lines: vec![],
+            });
             app.auto_scroll = true;
         }
         Some(ServerEvent::ToolCallEnd(t)) => {
@@ -807,7 +835,12 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
                     let new_lines = parse_lines("new_lines");
 
                     for msg in app.messages.iter_mut().rev() {
-                        if let DisplayMessage::ToolCall { name, arg: file_path_opt, .. } = msg {
+                        if let DisplayMessage::ToolCall {
+                            name,
+                            arg: file_path_opt,
+                            ..
+                        } = msg
+                        {
                             if name == "Edit" {
                                 let file_path = file_path_opt.clone().unwrap_or_default();
                                 *msg = DisplayMessage::EditCall {
@@ -853,6 +886,66 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
 // Connection management
 // ---------------------------------------------------------------------------
 
+/// Spawns a background task that watches `~/.ein/config.json` for changes.
+///
+/// On each change the config is re-read and a `ConfigChanged` event is sent to
+/// the main TUI loop, which forwards the new credentials to the server via a
+/// `ConfigUpdate` message on the live session (if connected).
+fn spawn_config_watcher(event_tx: mpsc::Sender<AppEvent>) {
+    use notify::Watcher;
+
+    let config_dir = match dirs::home_dir() {
+        Some(h) => h.join(".ein"),
+        None => return,
+    };
+
+    let (notify_tx, mut notify_rx) = mpsc::channel(4);
+    let mut watcher = match notify::recommended_watcher(move |res| {
+        let _ = notify_tx.blocking_send(res);
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[config watcher] failed to create watcher: {e}");
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&config_dir, notify::RecursiveMode::NonRecursive) {
+        eprintln!(
+            "[config watcher] failed to watch {}: {e}",
+            config_dir.display()
+        );
+        return;
+    }
+
+    tokio::spawn(async move {
+        let _watcher = watcher; // keep the watcher alive for the duration of the task
+
+        while let Some(Ok(event)) = notify_rx.recv().await {
+            let is_config = event.paths.iter().any(|p| p.ends_with("config.json"));
+            if !is_config {
+                continue;
+            }
+
+            // Brief debounce — editors often fire several events per save.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            while notify_rx.try_recv().is_ok() {} // drain duplicates
+
+            match load_or_create_config() {
+                Ok(new_cfg) => {
+                    if event_tx
+                        .send(AppEvent::ConfigChanged(new_cfg))
+                        .await
+                        .is_err()
+                    {
+                        break; // TUI exited
+                    }
+                }
+                Err(e) => eprintln!("[config watcher] failed to reload config: {e}"),
+            }
+        }
+    });
+}
+
 /// Attempts one full connect → session → bridge cycle.
 ///
 /// Returns `Ok(true)` if a session was live at some point (so the caller can
@@ -885,6 +978,8 @@ async fn try_connect(
                 allowed_hosts: cfg.allowed_hosts.clone(),
                 model: cfg.model.clone(),
                 max_tokens: cfg.max_tokens,
+                base_url: cfg.base_url.clone().unwrap_or_default(),
+                api_key: cfg.api_key.clone(),
             })),
         })
         .await?;
@@ -939,6 +1034,7 @@ async fn connection_manager(
                 // error message shown from the last real session drop.
             }
         }
+
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
@@ -973,6 +1069,9 @@ async fn main() -> anyhow::Result<()> {
     let cwd_display = cwd_str.clone().unwrap_or_else(|| "unknown".to_string());
 
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
+
+    // Watch ~/.ein/config.json for changes and send ConfigChanged events.
+    spawn_config_watcher(event_tx.clone());
 
     // If there is no cwd to prompt about, spawn the connection manager immediately.
     // Otherwise it is spawned when the modal is dismissed.
@@ -1152,6 +1251,22 @@ async fn main() -> anyhow::Result<()> {
                         app.connection_status = ConnectionStatus::Connecting;
                         app.agent_busy = false;
                         app.auto_scroll = true;
+                    }
+                    AppEvent::ConfigChanged(new_cfg) => {
+                        cfg = new_cfg.clone();
+                        if let Some(tx) = &app.prompt_tx {
+                            let _ = tx
+                                .send(UserInput {
+                                    input: Some(user_input::Input::ConfigUpdate(SessionConfig {
+                                        model: new_cfg.model.clone(),
+                                        max_tokens: new_cfg.max_tokens,
+                                        base_url: new_cfg.base_url.clone().unwrap_or_default(),
+                                        api_key: new_cfg.api_key.clone(),
+                                        ..Default::default()
+                                    })),
+                                })
+                                .await;
+                        }
                     }
                 }
             }

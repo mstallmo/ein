@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tonic::Status;
 
-use crate::model_client::CompletionProvider;
+use crate::model_client::WasmModelClient;
 use crate::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ pub struct SessionParams {
 pub async fn run_agent(
     messages: &mut Vec<Value>,
     tool_registry: &mut ToolRegistry,
-    model: &dyn CompletionProvider,
+    model: &mut WasmModelClient,
     session: &SessionParams,
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
 ) -> anyhow::Result<()> {
@@ -77,14 +77,30 @@ pub async fn run_agent(
             session.max_tokens,
         );
 
-        let resp = model
+        let resp = match model
             .complete(&CompletionRequest {
                 model: session.model.clone(),
                 messages: messages.clone(),
                 tools: tool_registry.schemas()?,
                 max_tokens: session.max_tokens,
             })
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[agent] model client error: {e}");
+
+                let _ = tx
+                    .send(Ok(AgentEvent {
+                        event: Some(Event::AgentError(AgentError {
+                            message: e.to_string(),
+                        })),
+                    }))
+                    .await;
+
+                return Ok(());
+            }
+        };
 
         // Check for API-level error (e.g. 402 insufficient credits).
         if let Some(error_obj) = &resp.error {
@@ -93,6 +109,7 @@ pub async fn run_agent(
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown API error");
             eprintln!("[agent] api error: {msg}");
+
             let _ = tx
                 .send(Ok(AgentEvent {
                     event: Some(Event::AgentError(AgentError {
@@ -100,6 +117,7 @@ pub async fn run_agent(
                     })),
                 }))
                 .await;
+
             return Ok(());
         }
 
@@ -107,6 +125,7 @@ pub async fn run_agent(
         if let Some(usage) = &resp.usage {
             cumulative_prompt += usage.prompt_tokens;
             cumulative_completion += usage.completion_tokens;
+
             let _ = tx
                 .send(Ok(AgentEvent {
                     event: Some(Event::TokenUsage(TokenUsage {
@@ -153,6 +172,7 @@ pub async fn run_agent(
                         match tool_call {
                             ToolCall::Function { id, function, .. } => {
                                 println!("[agent] tool call: {} (id={})", function.name, id);
+
                                 // Notify the client that a tool is starting.
                                 let _ = tx
                                     .send(Ok(AgentEvent {
@@ -224,6 +244,7 @@ async fn handle_tool_call(
                 }
                 Err(err) => {
                     eprintln!("[agent] tool '{}' error: {err}", function.name);
+
                     return (format!("Error: {err}"), String::new());
                 }
             };
