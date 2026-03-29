@@ -23,13 +23,20 @@ Plugins (Bash, Read, Write) are WASM components compiled separately:
 
 In debug builds plugins are loaded from `./target/wasm32-wasip2/debug/` automatically — no installation needed.
 
-Requires `OPENROUTER_API_KEY` environment variable.
+Credentials are configured in `~/.ein/config.json` (created on first TUI launch). Add `api_key` and `base_url` before running:
+
+```json
+{
+  "api_key": "sk-or-...",
+  "base_url": "https://openrouter.ai/api/v1"
+}
+```
 
 ## Running
 
 ```bash
-# Terminal 1 — start the server
-OPENROUTER_API_KEY=<key> cargo run -p ein-server
+# Terminal 1 — start the server (no env vars needed)
+cargo run -p ein-server
 
 # Terminal 2 — start the TUI (connects to localhost:50051 by default)
 cargo run -p ein-tui
@@ -58,14 +65,17 @@ The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client stream
 
 ### Session lifecycle
 
-Each connection goes through two phases:
+Each connection goes through three message types (all variants of `UserInput`):
 
-1. **Init** — the client sends a `SessionConfig` as the first `UserInput` (the `init` variant of the `oneof`). The server applies it before starting the prompt loop.
-2. **Prompts** — subsequent `UserInput` messages carry the `prompt` string variant and drive `run_agent`.
+1. **Init** — the client sends a `SessionConfig` as the first message (the `init` variant). The server instantiates the model client and loads tool plugins before starting the prompt loop.
+2. **Prompts** — subsequent messages carry the `prompt` string variant and drive `run_agent`.
+3. **Config update** — a `config_update` message (same shape as `SessionConfig`) may arrive at any time after init. The server re-instantiates the model client with the new credentials mid-session without resetting conversation history. Sent automatically by the TUI when `~/.ein/config.json` changes on disk.
 
 `SessionConfig` carries:
-- `allowed_paths` — filesystem paths preopened for WASM plugins via `WasiCtxBuilder::preopened_dir`
-- `allowed_hosts` — hostnames plugins may connect to; resolved to IPs upfront and enforced via `WasiCtxBuilder::socket_addr_check` (empty = deny all; specific entries = allowlist only; `"*"` = allow all)
+- `api_key` — API key for the model client plugin (e.g. OpenRouter key)
+- `base_url` — model API endpoint; empty = deny all outbound connections; `"*"` = allow all; real URL = restrict to that hostname only
+- `allowed_paths` — filesystem paths preopened for WASM tool plugins via `WasiCtxBuilder::preopened_dir`
+- `allowed_hosts` — hostnames WASM tool plugins may connect to (empty = deny all; `"*"` = allow all)
 - `model` — OpenRouter model ID
 - `max_tokens` — token limit per LLM call
 
@@ -73,17 +83,20 @@ Each connection goes through two phases:
 
 `ClientConfig` is loaded from (or created at) `~/.ein/config.json` on TUI startup. Fields mirror `SessionConfig`. At startup the TUI shows a floating modal asking whether to add the current working directory to `allowed_paths` for that session; this is never persisted to `config.json`.
 
+The TUI watches `~/.ein/config.json` for changes using `notify` (platform-native: FSEvents/inotify/ReadDirectoryChangesW). When the file changes, the new config is read and a `config_update` message is sent to the server if a session is live, or used on the next reconnect if not. `allowed_paths` and `allowed_hosts` are session-scoped (set at init) and are not updated mid-session by config changes.
+
 ### Server (`crates/ein-server/`)
 
 | File | Role |
 |------|------|
-| `src/main.rs` | CLI arg parsing, `EinConfig`, `HarnessState`, server startup |
-| `src/grpc.rs` | `AgentServer` — tonic `Agent` impl, spawns per-session tasks |
+| `src/main.rs` | CLI arg parsing, `EinConfig`, `HarnessState`, `ModelClientHarnessState` (incl. HTTP host filtering), server startup |
+| `src/grpc.rs` | `AgentServer` — tonic `Agent` impl, spawns per-session tasks; handles `ConfigUpdate` mid-session |
 | `src/agent.rs` | `run_agent` — the LLM ↔ tool loop |
+| `src/model_client.rs` | `WasmModelClient`, `build_model_client_linker`, `load_model_client_component`, `instantiate_model_client` |
 | `src/tools.rs` | `ToolRegistry` + `WasmTool` — loads and calls WASM plugins |
-| `src/syscalls.rs` | Host functions exposed to WASM plugins (spawn, log, …) |
+| `src/syscalls.rs` | Host functions exposed to WASM tool plugins (spawn, log, …) |
 
-**Agent loop** (`src/agent.rs`): sends the message history to the LLM, streams `ContentDelta` events for text output, executes each requested `ToolCall` via the registry, appends results to history, and loops until `FinishReason::Stop`. On each iteration it checks for an `{"error": ...}` response from OpenRouter (e.g. 402 insufficient credits) and emits an `AgentError` event rather than panicking. Cumulative token usage is sent as `TokenUsage` events after each LLM call.
+**Agent loop** (`src/agent.rs`): sends the message history to the LLM, streams `ContentDelta` events for text output, executes each requested `ToolCall` via the registry, appends results to history, and loops until `FinishReason::Stop`. Transport errors from the model client (e.g. `HttpRequestDenied`, network failures) and API-level errors (e.g. 402 insufficient credits) both emit `AgentError` events and return `Ok(())` — the session is preserved and the user can retry after fixing their config. Cumulative token usage is sent as `TokenUsage` events after each LLM call.
 
 **Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files, instantiates each as a Wasmtime component, and calls `name()`/`schema()` to self-describe. In debug mode this is `./target/wasm32-wasip2/debug/`; in release mode `~/.ein/plugins/`. Each `WasmTool` gets its own `WasiCtx` built from the session's `allowed_paths` and `allowed_hosts`.
 
@@ -113,7 +126,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 **CWD modal**: at startup a centered floating window (`Clear` + bordered `Block`) overlays the TUI asking whether to allow access to the current working directory. Press `Y` to add it to `allowed_paths` for the session; `N`, `Enter`, or `Esc` to skip. The connection manager is spawned only after this modal is dismissed.
 
-**Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string.
+**Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string; `AppEvent::ConfigChanged` carries a freshly parsed `ClientConfig` from the file watcher.
 
 **Tool call display**: `▸ ToolName  primary_arg` — for `Bash` the command is shown; for `Read`/`Write`/`Edit` the file path is shown. `Edit` additionally renders a syntax-highlighted diff (up to `DIFF_MAX_LINES` = 5 lines each of removed/added content) using `syntect` with the `base16-ocean.dark` theme.
 
@@ -125,6 +138,8 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 ### WASM plugin interface (`packages/`)
 
+**Tool plugins** implement the `ToolPlugin` trait from `packages/ein_tool/` and declare their name, description, and JSON parameter schema via `ToolDef`. They are compiled to `wasm32-wasip2`.
+
 | Package | Tool name | Description |
 |---------|-----------|-------------|
 | `ein_bash` | `Bash` | Executes shell commands via the `spawn` syscall |
@@ -132,6 +147,14 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 | `ein_write` | `Write` | Writes content to a file |
 | `ein_edit` | `Edit` | Replaces an exact string in a file with new content; returns `metadata` with `start_line`, `old_lines`, and `new_lines` for the TUI diff view |
 
-Plugins implement the `ToolPlugin` trait from `packages/ein_tool/` and declare their name, description, and JSON parameter schema via `ToolDef`. They are compiled to `wasm32-wasip2`.
-
 To add a new tool, create a package under `packages/` implementing `ToolPlugin`, add it to `build_install_plugins.sh`, and rebuild.
+
+**Model client plugins** implement the `ModelClient` WIT interface (`wit/model_client/`). The server compiles the plugin once at startup and instantiates it per session with the session's credentials.
+
+| Package | Description |
+|---------|-------------|
+| `ein_openrouter` | OpenRouter chat completions client; uses `ein_http` for outbound HTTP |
+| `ein_http` | `wasm32-wasip2`-only HTTP client backed by `wstd` (`wasi:http/outgoing-handler`); reqwest-like builder API |
+| `ein_model_client` | Shared types (`CompletionRequest`, `CompletionResponse`) and WIT bindings used by model client plugins |
+
+Outbound HTTP from model client plugins is intercepted by `ModelClientHarnessState::send_request` (in `src/main.rs`), which enforces the per-session `base_url` hostname allowlist before forwarding to `default_send_request`.

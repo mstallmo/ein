@@ -25,11 +25,19 @@ impl ToolPlugin for EditTool {
     }
 
     fn schema(&self) -> ToolDef {
-        ToolDef::function(self.name(), "Replace a specific string in a file with new content")
-            .param("file_path", "string", "The path to the file to edit", true)
-            .param("old_string", "string", "The exact string to replace", true)
-            .param("new_string", "string", "The string to replace it with", true)
-            .build()
+        ToolDef::function(
+            self.name(),
+            "Replace a specific string in a file with new content",
+        )
+        .param("file_path", "string", "The path to the file to edit", true)
+        .param("old_string", "string", "The exact string to replace", true)
+        .param(
+            "new_string",
+            "string",
+            "The string to replace it with",
+            true,
+        )
+        .build()
     }
 
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {

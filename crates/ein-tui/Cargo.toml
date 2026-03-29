@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow       = { workspace = true }
 crossterm    = { version = "0.28", features = ["event-stream"] }
+notify       = "6"
 dirs         = "6.0.0"
 ein-proto    = { path = "../ein-proto" }
 ratatui      = "0.29"

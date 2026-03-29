@@ -12,8 +12,9 @@ service Agent {
 // messages MUST be the `prompt` variant.
 message UserInput {
     oneof input {
-        SessionConfig init   = 1;
-        string        prompt = 2;
+        SessionConfig init          = 1;
+        string        prompt        = 2;
+        SessionConfig config_update = 3;
     }
 }
 
@@ -29,6 +30,11 @@ message SessionConfig {
     string model      = 3;
     // Maximum tokens the LLM may generate per completion request.
     int32  max_tokens = 4;
+    // Base URL for the model client plugin API endpoint.
+    // Empty string means "use the plugin's own default".
+    string base_url = 5;
+    // API key for the model client plugin (e.g. OpenRouter API key).
+    string api_key  = 6;
 }
 
 message AgentEvent {

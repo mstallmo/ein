@@ -1,0 +1,5 @@
+package ein:model-client;
+
+interface host {
+    log: func(msg: string);
+}

@@ -1,4 +1,4 @@
-use crate::bindings::Plugin;
+use crate::{HarnessState, bindings::Plugin};
 use ein_proto::ein::AgentEvent;
 use ein_tool::{ToolDef, ToolResult};
 use serde_json::Value;
@@ -88,7 +88,7 @@ impl WasmTool {
         })
     }
 
-    pub async fn cleanup(&mut self) -> anyhow::Result<()> {
+    pub async fn cleanup(mut self) -> anyhow::Result<()> {
         self.handle.resource_drop_async(&mut self.store).await?;
 
         Ok(())
@@ -201,10 +201,23 @@ impl ToolRegistry {
     }
 
     pub async fn unload(mut self) {
-        for (name, mut tool) in self.0.drain() {
+        for (name, tool) in self.0.drain() {
             if let Err(err) = tool.cleanup().await {
                 eprintln!("Failed to cleanup tool {name}: {err}");
             }
         }
     }
+}
+
+/// Builds the Wasmtime linker for tool plugins — called once at server startup.
+///
+/// Registers WASI p2 interface.
+pub fn build_tool_linker(engine: &Engine) -> anyhow::Result<Linker<HarnessState>> {
+    let mut linker: Linker<HarnessState> = Linker::new(&engine);
+    // Register standard WASI p2 host functions.
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // Register Ein-specific host functions (syscalls exposed to plugins).
+    Plugin::add_to_linker::<HarnessState, HasSelf<HarnessState>>(&mut linker, |state| state)?;
+
+    Ok(linker)
 }
