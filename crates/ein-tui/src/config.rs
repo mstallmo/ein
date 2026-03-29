@@ -1,45 +1,34 @@
+use std::collections::HashMap;
+
+/// Per-plugin configuration stored in `~/.ein/config.json`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PluginConfig {
+    /// Plugin-specific filesystem paths, unioned with the global allowed_paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_paths: Vec<String>,
+    /// Plugin-specific network hosts, unioned with the global allowed_hosts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    /// Arbitrary key-value config forwarded to the plugin (e.g. api_key, base_url, model).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub config: HashMap<String, String>,
+}
+
 /// Client-side session config loaded from `~/.ein/config.json`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClientConfig {
     #[serde(default)]
     pub allowed_paths: Vec<String>,
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
-    #[serde(default = "ClientConfig::default_model")]
-    pub model: String,
-    #[serde(default = "ClientConfig::default_max_tokens")]
-    pub max_tokens: i32,
-    /// Override the model client API endpoint. When absent, the plugin uses its own default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    /// API key for the configured model client (e.g. an OpenRouter key).
+    /// Per-plugin configuration keyed by plugin name (e.g. "ein_openrouter", "Bash").
     #[serde(default)]
-    pub api_key: String,
-}
-
-impl ClientConfig {
-    pub fn default_model() -> String {
-        "anthropic/claude-haiku-4.5".to_string()
-    }
-    pub fn default_max_tokens() -> i32 {
-        2500
-    }
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            allowed_paths: vec![],
-            allowed_hosts: vec![],
-            model: Self::default_model(),
-            max_tokens: Self::default_max_tokens(),
-            base_url: None,
-            api_key: String::new(),
-        }
-    }
+    pub plugin_configs: HashMap<String, PluginConfig>,
 }
 
 /// Loads `~/.ein/config.json`, creating it with defaults if absent.
+/// Migrates legacy flat config (api_key, base_url, model, max_tokens at root)
+/// into plugin_configs["ein_openrouter"].config automatically.
 pub fn load_or_create_config() -> anyhow::Result<ClientConfig> {
     let config_path = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
@@ -48,7 +37,11 @@ pub fn load_or_create_config() -> anyhow::Result<ClientConfig> {
 
     if config_path.exists() {
         let raw = std::fs::read_to_string(&config_path)?;
-        Ok(serde_json::from_str(&raw)?)
+        let mut value: serde_json::Value = serde_json::from_str(&raw)?;
+        if migrate_v1_to_v2(&mut value) {
+            std::fs::write(&config_path, serde_json::to_string_pretty(&value)?)?;
+        }
+        Ok(serde_json::from_value(value)?)
     } else {
         let default = ClientConfig::default();
         if let Some(parent) = config_path.parent() {
@@ -57,4 +50,55 @@ pub fn load_or_create_config() -> anyhow::Result<ClientConfig> {
         std::fs::write(&config_path, serde_json::to_string_pretty(&default)?)?;
         Ok(default)
     }
+}
+
+/// Returns true if the value was modified (migration performed).
+fn migrate_v1_to_v2(value: &mut serde_json::Value) -> bool {
+    let obj = match value.as_object_mut() {
+        Some(o) => o,
+        None => return false,
+    };
+
+    let legacy_keys = ["api_key", "base_url", "model", "max_tokens"];
+    let has_legacy = legacy_keys.iter().any(|k| obj.contains_key(*k));
+    if !has_legacy {
+        return false;
+    }
+
+    let mut plugin_cfg: HashMap<String, serde_json::Value> = HashMap::new();
+    for key in &legacy_keys {
+        if let Some(v) = obj.remove(*key) {
+            // max_tokens may be a number; convert to string for the generic map.
+            let s = match v {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            plugin_cfg.insert(key.to_string(), serde_json::Value::String(s));
+        }
+    }
+
+    // Merge into existing plugin_configs["ein_openrouter"].config or create it.
+    let plugin_configs = obj
+        .entry("plugin_configs")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    if let Some(plugins) = plugin_configs.as_object_mut() {
+        let openrouter = plugins
+            .entry("ein_openrouter")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+        if let Some(or_obj) = openrouter.as_object_mut() {
+            let config = or_obj
+                .entry("config")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+            if let Some(cfg_obj) = config.as_object_mut() {
+                for (k, v) in plugin_cfg {
+                    cfg_obj.entry(k).or_insert(v);
+                }
+            }
+        }
+    }
+
+    true
 }

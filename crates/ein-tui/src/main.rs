@@ -950,6 +950,28 @@ fn spawn_config_watcher(event_tx: mpsc::Sender<AppEvent>) {
 ///
 /// Returns `Ok(true)` if a session was live at some point (so the caller can
 /// decide whether a subsequent failure warrants a visible error message),
+fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
+    use ein_proto::ein::PluginConfig as ProtoPluginConfig;
+    SessionConfig {
+        allowed_paths: cfg.allowed_paths.clone(),
+        allowed_hosts: cfg.allowed_hosts.clone(),
+        plugin_configs: cfg
+            .plugin_configs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    ProtoPluginConfig {
+                        allowed_paths: v.allowed_paths.clone(),
+                        allowed_hosts: v.allowed_hosts.clone(),
+                        config: v.config.clone(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 /// `Ok(false)` if the TUI event channel closed (TUI exited — stop retrying),
 /// or `Err` if the initial connection or handshake failed.
 async fn try_connect(
@@ -973,14 +995,7 @@ async fn try_connect(
     // Send SessionConfig as the mandatory first message before any prompts.
     prompt_tx
         .send(UserInput {
-            input: Some(user_input::Input::Init(SessionConfig {
-                allowed_paths: cfg.allowed_paths.clone(),
-                allowed_hosts: cfg.allowed_hosts.clone(),
-                model: cfg.model.clone(),
-                max_tokens: cfg.max_tokens,
-                base_url: cfg.base_url.clone().unwrap_or_default(),
-                api_key: cfg.api_key.clone(),
-            })),
+            input: Some(user_input::Input::Init(to_proto_session_config(&cfg))),
         })
         .await?;
 
@@ -1055,11 +1070,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Derive a short model name for the status bar by stripping the vendor
     // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
-    let model_display = cfg
-        .model
+    let model_full = cfg
+        .plugin_configs
+        .values()
+        .find_map(|pc| pc.config.get("model").cloned())
+        .unwrap_or_else(|| "anthropic/claude-haiku-4.5".to_string());
+    let model_display = model_full
         .split_once('/')
         .map(|(_, m)| m.to_string())
-        .unwrap_or_else(|| cfg.model.clone());
+        .unwrap_or(model_full);
 
     // Collect the cwd for the startup modal (shown before connecting) and
     // for the welcome header in the conversation pane.
@@ -1257,13 +1276,9 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(tx) = &app.prompt_tx {
                             let _ = tx
                                 .send(UserInput {
-                                    input: Some(user_input::Input::ConfigUpdate(SessionConfig {
-                                        model: new_cfg.model.clone(),
-                                        max_tokens: new_cfg.max_tokens,
-                                        base_url: new_cfg.base_url.clone().unwrap_or_default(),
-                                        api_key: new_cfg.api_key.clone(),
-                                        ..Default::default()
-                                    })),
+                                    input: Some(user_input::Input::ConfigUpdate(
+                                        to_proto_session_config(&new_cfg),
+                                    )),
                                 })
                                 .await;
                         }

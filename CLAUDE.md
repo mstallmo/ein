@@ -23,12 +23,18 @@ Plugins (Bash, Read, Write) are WASM components compiled separately:
 
 In debug builds plugins are loaded from `./target/wasm32-wasip2/debug/` automatically — no installation needed.
 
-Credentials are configured in `~/.ein/config.json` (created on first TUI launch). Add `api_key` and `base_url` before running:
+Credentials are configured in `~/.ein/config.json` (created on first TUI launch). Add `api_key` and `base_url` under `plugin_configs["ein_openrouter"].config` before running:
 
 ```json
 {
-  "api_key": "sk-or-...",
-  "base_url": "https://openrouter.ai/api/v1"
+  "plugin_configs": {
+    "ein_openrouter": {
+      "config": {
+        "api_key": "sk-or-...",
+        "base_url": "https://openrouter.ai/api/v1"
+      }
+    }
+  }
 }
 ```
 
@@ -72,18 +78,20 @@ Each connection goes through three message types (all variants of `UserInput`):
 3. **Config update** — a `config_update` message (same shape as `SessionConfig`) may arrive at any time after init. The server re-instantiates the model client with the new credentials mid-session without resetting conversation history. Sent automatically by the TUI when `~/.ein/config.json` changes on disk.
 
 `SessionConfig` carries:
-- `api_key` — API key for the model client plugin (e.g. OpenRouter key)
-- `base_url` — model API endpoint; empty = deny all outbound connections; `"*"` = allow all; real URL = restrict to that hostname only
-- `allowed_paths` — filesystem paths preopened for WASM tool plugins via `WasiCtxBuilder::preopened_dir`
-- `allowed_hosts` — hostnames WASM tool plugins may connect to (empty = deny all; `"*"` = allow all)
-- `model` — OpenRouter model ID
-- `max_tokens` — token limit per LLM call
+- `allowed_paths` — filesystem paths preopened for all WASM plugins via `WasiCtxBuilder::preopened_dir`
+- `allowed_hosts` — hostnames all WASM plugins may connect to (empty = deny all; `"*"` = allow all)
+- `plugin_configs` — map of plugin filename stem → `PluginConfig`; each entry has its own `allowed_paths`/`allowed_hosts` (merged with the global lists) and a `config` string map for plugin-specific parameters
+
+Known `plugin_configs` keys and their `config` entries:
+- `"ein_openrouter"` — `api_key`, `base_url` (empty = deny all outbound; `"*"` = allow all; real URL = restrict to that host), `model`, `max_tokens`
 
 ### Client config (`crates/ein-tui/src/config.rs`)
 
-`ClientConfig` is loaded from (or created at) `~/.ein/config.json` on TUI startup. Fields mirror `SessionConfig`. At startup the TUI shows a floating modal asking whether to add the current working directory to `allowed_paths` for that session; this is never persisted to `config.json`.
+`ClientConfig` is loaded from (or created at) `~/.ein/config.json` on TUI startup. Structure mirrors `SessionConfig`. At startup the TUI shows a floating modal asking whether to add the current working directory to `allowed_paths` for that session; this is never persisted to `config.json`.
 
 The TUI watches `~/.ein/config.json` for changes using `notify` (platform-native: FSEvents/inotify/ReadDirectoryChangesW). When the file changes, the new config is read and a `config_update` message is sent to the server if a session is live, or used on the next reconnect if not. `allowed_paths` and `allowed_hosts` are session-scoped (set at init) and are not updated mid-session by config changes.
+
+Legacy flat config files (with top-level `api_key`, `base_url`, `model`, `max_tokens`) are automatically migrated to the nested format on load.
 
 ### Server (`crates/ein-server/`)
 
@@ -98,7 +106,7 @@ The TUI watches `~/.ein/config.json` for changes using `notify` (platform-native
 
 **Agent loop** (`src/agent.rs`): sends the message history to the LLM, streams `ContentDelta` events for text output, executes each requested `ToolCall` via the registry, appends results to history, and loops until `FinishReason::Stop`. Transport errors from the model client (e.g. `HttpRequestDenied`, network failures) and API-level errors (e.g. 402 insufficient credits) both emit `AgentError` events and return `Ok(())` — the session is preserved and the user can retry after fixing their config. Cumulative token usage is sent as `TokenUsage` events after each LLM call.
 
-**Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files, instantiates each as a Wasmtime component, and calls `name()`/`schema()` to self-describe. In debug mode this is `./target/wasm32-wasip2/debug/`; in release mode `~/.ein/plugins/`. Each `WasmTool` gets its own `WasiCtx` built from the session's `allowed_paths` and `allowed_hosts`.
+**Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files and instantiates each as a Wasmtime component. The filename stem (e.g. `ein_bash`) is used as the plugin's config identity to look up its entry in `plugin_configs`; global `allowed_paths`/`allowed_hosts` are merged with any plugin-specific overrides before the WASI context is built. After instantiation, `name()`/`schema()` are called to get the display name (e.g. `"Bash"`) and tool schema exposed to the model. In debug mode plugins are loaded from `./target/wasm32-wasip2/debug/`; in release mode from `~/.ein/plugins/`.
 
 ### TUI (`crates/ein-tui/`)
 
@@ -157,4 +165,6 @@ To add a new tool, create a package under `packages/` implementing `ToolPlugin`,
 | `ein_http` | `wasm32-wasip2`-only HTTP client backed by `wstd` (`wasi:http/outgoing-handler`); reqwest-like builder API |
 | `ein_model_client` | Shared types (`CompletionRequest`, `CompletionResponse`) and WIT bindings used by model client plugins |
 
-Outbound HTTP from model client plugins is intercepted by `ModelClientHarnessState::send_request` (in `src/main.rs`), which enforces the per-session `base_url` hostname allowlist before forwarding to `default_send_request`.
+Outbound HTTP from model client plugins is intercepted by `ModelClientHarnessState::send_request` (in `src/main.rs`), which enforces the per-session hostname allowlist (derived from `base_url` + any extra `allowed_hosts` in the plugin's config entry) before forwarding to `default_send_request`.
+
+The model client plugin has no `name()` WIT method — its config identity is its filename stem (e.g. `"ein_openrouter"`), consistent with tool plugins.
