@@ -1,8 +1,8 @@
 use crate::{HarnessState, bindings::Plugin};
-use ein_proto::ein::AgentEvent;
+use ein_proto::ein::{AgentEvent, PluginConfig};
 use ein_tool::{ToolDef, ToolResult};
 use serde_json::Value;
-use std::{collections, net::IpAddr, path::Path, sync::Arc};
+use std::{collections::{self, HashMap}, net::IpAddr, path::Path, sync::Arc};
 use tokio::{fs, sync::mpsc};
 use tonic::Status;
 use wasmtime::{Engine, Store, component::*};
@@ -149,8 +149,9 @@ impl ToolRegistry {
         engine: &Engine,
         linker: &Linker<crate::HarnessState>,
         plugin_dir: P,
-        allowed_paths: &[String],
-        allowed_hosts: &[String],
+        global_allowed_paths: &[String],
+        global_allowed_hosts: &[String],
+        plugin_configs: &HashMap<String, PluginConfig>,
     ) -> anyhow::Result<Self> {
         let mut registry = Self::new();
 
@@ -160,12 +161,27 @@ impl ToolRegistry {
             match entries.next_entry().await {
                 Ok(Some(entry)) => {
                     if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
+                        let stem = entry
+                            .path()
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let pc = plugin_configs.get(&stem);
+                        let merged_paths = merge_dedup(
+                            global_allowed_paths,
+                            pc.map(|p| p.allowed_paths.as_slice()).unwrap_or(&[]),
+                        );
+                        let merged_hosts = merge_dedup(
+                            global_allowed_hosts,
+                            pc.map(|p| p.allowed_hosts.as_slice()).unwrap_or(&[]),
+                        );
                         let tool = WasmTool::load(
                             engine,
                             linker,
                             entry.path(),
-                            allowed_paths,
-                            allowed_hosts,
+                            &merged_paths,
+                            &merged_hosts,
                         )
                         .await?;
                         registry.add_tool(tool);
@@ -207,6 +223,19 @@ impl ToolRegistry {
             }
         }
     }
+}
+
+/// Merges two slices into a deduplicated Vec, preserving insertion order with
+/// `base` entries first. Used to union global and per-plugin allowed lists.
+pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
+    let mut seen = collections::HashSet::new();
+    let mut result = Vec::with_capacity(base.len() + extra.len());
+    for s in base.iter().chain(extra.iter()) {
+        if seen.insert(s.clone()) {
+            result.push(s.clone());
+        }
+    }
+    result
 }
 
 /// Builds the Wasmtime linker for tool plugins — called once at server startup.

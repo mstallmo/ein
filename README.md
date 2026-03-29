@@ -44,8 +44,14 @@ Before running, add your OpenRouter API key to `~/.ein/config.json` (created aut
 
 ```json
 {
-  "api_key": "sk-or-...",
-  "base_url": "https://openrouter.ai/api/v1"
+  "plugin_configs": {
+    "ein_openrouter": {
+      "config": {
+        "api_key": "sk-or-...",
+        "base_url": "https://openrouter.ai/api/v1"
+      }
+    }
+  }
 }
 ```
 
@@ -71,31 +77,54 @@ cargo run -p ein-tui -- http://my-server:50051
 
 ## Configuration
 
-The TUI stores its configuration at `~/.ein/config.json`. The file is created with defaults on first run. Edit it to add your credentials:
+The TUI stores its configuration at `~/.ein/config.json`. The file is created with defaults on first run.
 
 ```json
 {
-  "api_key": "sk-or-...",
-  "base_url": "https://openrouter.ai/api/v1",
-  "model": "anthropic/claude-haiku-4.5",
-  "max_tokens": 2500,
   "allowed_paths": [],
-  "allowed_hosts": []
+  "allowed_hosts": [],
+  "plugin_configs": {
+    "ein_openrouter": {
+      "config": {
+        "api_key": "sk-or-...",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "anthropic/claude-haiku-4.5",
+        "max_tokens": "2500"
+      }
+    }
+  }
 }
 ```
 
+### Global fields
+
 | Field | Description |
 |-------|-------------|
-| `api_key` | API key for the model client plugin (e.g. your OpenRouter key) |
+| `allowed_paths` | Filesystem paths all WASM plugins may read/write (preopened for every session) |
+| `allowed_hosts` | Hostnames all WASM plugins may connect to (empty = deny all; `"*"` = allow all) |
+
+In addition, at startup the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
+
+### Per-plugin configuration (`plugin_configs`)
+
+`plugin_configs` is a map keyed by plugin filename stem (e.g. `"ein_openrouter"`, `"ein_bash"`). Each entry can contain:
+
+| Field | Description |
+|-------|-------------|
+| `allowed_paths` | Additional filesystem paths for this plugin only, merged with the global list |
+| `allowed_hosts` | Additional hostnames for this plugin only, merged with the global list |
+| `config` | Arbitrary key-value pairs forwarded to the plugin at instantiation |
+
+Known `config` keys for `ein_openrouter`:
+
+| Key | Description |
+|-----|-------------|
+| `api_key` | Your OpenRouter API key |
 | `base_url` | Model API endpoint; restricts outbound connections to that host (empty = deny all; `"*"` = allow all) |
 | `model` | OpenRouter model ID |
 | `max_tokens` | Maximum tokens per LLM response |
-| `allowed_paths` | Filesystem paths the WASM tools may read/write (preopened for every session) |
-| `allowed_hosts` | Hostnames the WASM tools may connect to (empty = deny all; `"*"` = allow all) |
 
-`allowed_paths` and `allowed_hosts` act as a persistent allowlist for tool plugins. In addition, at startup the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
-
-Changes to `config.json` are picked up automatically while the TUI is running — credentials and model settings update without restarting.
+Changes to `config.json` are picked up automatically while the TUI is running — plugin config updates take effect without restarting.
 
 ## Usage
 
@@ -157,4 +186,4 @@ packages/
   ein_edit/     Edit tool plugin
 ```
 
-The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (credentials, model, token limit, sandbox constraints), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output. A `config_update` message variant allows the TUI to push credential/model changes to a live session without reconnecting.
+The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output. A `config_update` message variant allows the TUI to push plugin config changes to a live session without reconnecting.

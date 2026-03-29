@@ -87,20 +87,25 @@ pub fn build_model_client_linker(
     Ok(linker)
 }
 
-/// Scans `model_client_dir` for the first `.wasm` file and compiles it into a
-/// [`Component`] — called once at server startup.
+/// Scans `model_client_dir` for the first `.wasm` file, compiles it into a
+/// [`Component`], and returns both the component and the plugin name derived
+/// from the filename stem (e.g. `ein_openrouter.wasm` → `"ein_openrouter"`).
+/// Called once at server startup.
 pub async fn load_model_client_component(
     engine: &Engine,
     model_client_dir: &Path,
-) -> anyhow::Result<Component> {
+) -> anyhow::Result<(Component, String)> {
     let mut entries = tokio::fs::read_dir(model_client_dir).await?;
     while let Ok(Some(entry)) = entries.next_entry().await {
-        if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
-            println!(
-                "[model client] loading plugin from {}",
-                entry.path().display()
-            );
-            return Ok(Component::from_file(engine, entry.path())?);
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            println!("[model client] loading plugin from {}", path.display());
+            return Ok((Component::from_file(engine, path)?, name));
         }
     }
 

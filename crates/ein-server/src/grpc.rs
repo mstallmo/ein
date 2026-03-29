@@ -30,7 +30,7 @@ use crate::agent::{SessionParams, run_agent};
 use crate::model_client::{
     build_model_client_linker, instantiate_model_client, load_model_client_component,
 };
-use crate::tools::{ToolRegistry, build_tool_linker};
+use crate::tools::{ToolRegistry, build_tool_linker, merge_dedup};
 use ein_proto::ein::{
     AgentError, AgentEvent, UserInput, agent_event::Event, agent_server::Agent, user_input,
 };
@@ -47,6 +47,9 @@ pub struct AgentServer {
     engine: Arc<Engine>,
     model_client_linker: Arc<Linker<ModelClientHarnessState>>,
     model_client_component: Arc<Component>,
+    /// Plugin name derived from the model client WASM filename stem
+    /// (e.g. "ein_openrouter"). Used to look up per-plugin config.
+    model_client_name: Arc<str>,
     tool_linker: Arc<Linker<HarnessState>>,
 }
 
@@ -77,6 +80,43 @@ fn build_model_config(api_key: &str, base_url: &str) -> (String, Vec<String>) {
     (config.to_string(), allowed_hosts)
 }
 
+/// Extracts model client parameters from a `SessionConfig` by looking up the
+/// plugin-specific config keyed by `model_client_name`. Returns the JSON config
+/// string to pass to the plugin, the resolved allowed-hosts list, and session
+/// parameters (model + max_tokens).
+fn extract_model_params(
+    session_cfg: &ein_proto::ein::SessionConfig,
+    model_client_name: &str,
+) -> (String, Vec<String>, SessionParams) {
+    let pc = session_cfg.plugin_configs.get(model_client_name);
+    let api_key = pc
+        .and_then(|p| p.config.get("api_key"))
+        .cloned()
+        .unwrap_or_default();
+    let base_url = pc
+        .and_then(|p| p.config.get("base_url"))
+        .cloned()
+        .unwrap_or_default();
+    let model = pc
+        .and_then(|p| p.config.get("model"))
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "anthropic/claude-haiku-4.5".to_string());
+    let max_tokens = pc
+        .and_then(|p| p.config.get("max_tokens"))
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(2500);
+
+    let plugin_extra_hosts = pc
+        .map(|p| p.allowed_hosts.as_slice())
+        .unwrap_or(&[]);
+    let (model_config_json, derived_hosts) = build_model_config(&api_key, &base_url);
+    let allowed_hosts = merge_dedup(&derived_hosts, plugin_extra_hosts);
+
+    let params = SessionParams { model, max_tokens };
+    (model_config_json, allowed_hosts, params)
+}
+
 impl AgentServer {
     /// Creates a new `AgentServer`.
     ///
@@ -89,8 +129,9 @@ impl AgentServer {
         let config = Arc::new(crate::EinConfig::default());
 
         let model_client_linker = Arc::new(build_model_client_linker(&engine)?);
-        let model_client_component =
-            Arc::new(load_model_client_component(&engine, &config.model_client_dir).await?);
+        let (model_client_component, model_client_name) =
+            load_model_client_component(&engine, &config.model_client_dir).await?;
+        let model_client_component = Arc::new(model_client_component);
 
         let tool_linker = Arc::new(build_tool_linker(&engine)?);
 
@@ -99,6 +140,7 @@ impl AgentServer {
             engine: Arc::new(engine),
             model_client_linker,
             model_client_component,
+            model_client_name: model_client_name.into(),
             tool_linker,
         })
     }
@@ -124,6 +166,7 @@ impl Agent for AgentServer {
         let engine = self.engine.clone();
         let model_client_linker = self.model_client_linker.clone();
         let model_client_component = self.model_client_component.clone();
+        let model_client_name = self.model_client_name.clone();
         let tool_linker = self.tool_linker.clone();
 
         tokio::spawn(async move {
@@ -150,18 +193,8 @@ impl Agent for AgentServer {
                 }
             };
 
-            let mut session_params = SessionParams {
-                model: if session_cfg.model.is_empty() {
-                    "anthropic/claude-haiku-4.5".to_string()
-                } else {
-                    session_cfg.model.clone()
-                },
-                max_tokens: if session_cfg.max_tokens == 0 {
-                    2500
-                } else {
-                    session_cfg.max_tokens
-                },
-            };
+            let (model_config_json, model_allowed_hosts, mut session_params) =
+                extract_model_params(&session_cfg, &model_client_name);
 
             println!(
                 "[session] config: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
@@ -170,19 +203,12 @@ impl Agent for AgentServer {
                 session_cfg.allowed_paths,
                 session_cfg.allowed_hosts,
             );
-
-            // --- Phase 2: instantiate model client with session credentials ---
-            let (model_config_json, model_allowed_hosts) =
-                build_model_config(&session_cfg.api_key, &session_cfg.base_url);
             println!(
-                "[session] model client: base_url={:?}, allowed_hosts={:?}",
-                if session_cfg.base_url.is_empty() {
-                    "<plugin default>"
-                } else {
-                    &session_cfg.base_url
-                },
+                "[session] model client: allowed_hosts={:?}",
                 model_allowed_hosts,
             );
+
+            // --- Phase 2: instantiate model client with session credentials ---
 
             let mut model = match instantiate_model_client(
                 &engine,
@@ -215,6 +241,7 @@ impl Agent for AgentServer {
                 &config.plugin_dir,
                 &session_cfg.allowed_paths,
                 &session_cfg.allowed_hosts,
+                &session_cfg.plugin_configs,
             )
             .await;
             let mut registry = match registry {
@@ -274,14 +301,9 @@ impl Agent for AgentServer {
                         }
                     }
                     Some(user_input::Input::ConfigUpdate(cfg)) => {
-                        if !cfg.model.is_empty() {
-                            session_params.model = cfg.model.clone();
-                        }
-                        if cfg.max_tokens != 0 {
-                            session_params.max_tokens = cfg.max_tokens;
-                        }
-                        let (new_config_json, new_allowed_hosts) =
-                            build_model_config(&cfg.api_key, &cfg.base_url);
+                        let (new_config_json, new_allowed_hosts, new_params) =
+                            extract_model_params(&cfg, &model_client_name);
+                        session_params = new_params;
                         println!("[session] config updated: {new_config_json}");
 
                         match instantiate_model_client(
