@@ -62,6 +62,53 @@ const DIFF_DEL_COLOR: Color = Color::Rgb(190, 90, 90);
 /// Maximum number of removed or added lines shown in an Edit diff.
 const DIFF_MAX_LINES: usize = 5;
 
+/// Application version, read from Cargo.toml at compile time.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// ---------------------------------------------------------------------------
+// Corgi pixel art (startup header)
+//
+// 16×16 pixel grid rendered as 8 terminal rows using the half-block technique:
+// each cell is a `▄` (lower-half block) where fg = lower pixel, bg = upper
+// pixel. This doubles vertical resolution so pixels appear roughly square.
+//
+// Color index key:
+//   0 = transparent   1 = tan/orange body    2 = dark-brown ears/outline
+//   3 = cream muzzle  4 = near-black eyes/nose  5 = pink tongue
+// ---------------------------------------------------------------------------
+
+#[rustfmt::skip]
+const CORGI_PIXELS: [[u8; 16]; 16] = [
+    [0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0], // row  0: ear tips
+    [0, 0, 2, 1, 1, 2, 0, 0, 0, 0, 2, 1, 1, 2, 0, 0], // row  1: ears
+    [0, 0, 2, 1, 1, 2, 0, 0, 0, 0, 2, 1, 1, 2, 0, 0], // row  2: ears
+    [0, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 0], // row  3: top of head
+    [0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0], // row  4: forehead
+    [0, 2, 1, 1, 4, 1, 1, 1, 1, 1, 1, 4, 1, 1, 2, 0], // row  5: eyes
+    [0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0], // row  6: under eyes
+    [0, 2, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 1, 2, 0], // row  7: upper muzzle
+    [0, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 0], // row  8: muzzle
+    [0, 2, 3, 3, 3, 3, 4, 4, 4, 4, 3, 3, 3, 3, 2, 0], // row  9: nose
+    [0, 2, 3, 3, 3, 3, 3, 5, 5, 3, 3, 3, 3, 3, 2, 0], // row 10: tongue
+    [0, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 0], // row 11: lower muzzle
+    [0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0], // row 12: chin
+    [0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0], // row 13: neck
+    [0, 0, 0, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 0], // row 14: neck narrowing
+    [0, 0, 0, 0, 2, 2, 1, 1, 1, 1, 2, 2, 0, 0, 0, 0], // row 15: neck base
+];
+
+/// Maps a pixel color index to its `Color`, or `None` for transparent (index 0).
+fn pixel_color(idx: u8) -> Option<Color> {
+    match idx {
+        1 => Some(Color::Rgb(220, 160, 70)),  // tan/orange body
+        2 => Some(Color::Rgb(120, 70, 20)),   // dark-brown ears/outline
+        3 => Some(Color::Rgb(240, 225, 195)), // cream muzzle
+        4 => Some(Color::Rgb(30, 20, 10)),    // near-black eyes/nose
+        5 => Some(Color::Rgb(220, 140, 150)), // pink tongue
+        _ => None,                            // transparent
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Syntax highlighting (lazily initialised)
 // ---------------------------------------------------------------------------
@@ -94,7 +141,10 @@ fn highlight_line_spans(h: &mut HighlightLines, ps: &SyntaxSet, line: &str) -> V
                     None
                 } else {
                     let SyntectStyle { foreground: c, .. } = style;
-                    Some(Span::styled(t, Style::default().fg(Color::Rgb(c.r, c.g, c.b))))
+                    Some(Span::styled(
+                        t,
+                        Style::default().fg(Color::Rgb(c.r, c.g, c.b)),
+                    ))
                 }
             })
             .collect(),
@@ -154,14 +204,20 @@ enum ConnectionStatus {
 // ---------------------------------------------------------------------------
 
 enum DisplayMessage {
+    /// Welcome banner shown once at the top of the conversation on startup.
+    Header { cwd: String },
     /// Text sent by the local user.
     User(String),
     /// Streamed text from the agent (may be appended to incrementally).
     AgentText(String),
-    /// A tool invocation: (tool_name, primary_arg). The arg is the most
-    /// meaningful single parameter for display (e.g. the shell command for
-    /// Bash, the file path for Read/Write).
-    ToolCall(String, Option<String>),
+    /// A tool invocation. `arg` is the most meaningful single parameter for
+    /// display (e.g. the shell command for Bash, the file path for Read/Write).
+    /// `output_lines` accumulates stdout streamed in real time (Bash only).
+    ToolCall {
+        name: String,
+        arg: Option<String>,
+        output_lines: Vec<String>,
+    },
     /// An Edit tool invocation with a syntax-highlighted diff for display.
     /// Populated at `ToolCallEnd` once the server has computed the start line.
     EditCall {
@@ -213,9 +269,9 @@ struct App {
 }
 
 impl App {
-    fn new(model_display: String, pending_cwd_prompt: Option<String>) -> Self {
+    fn new(model_display: String, pending_cwd_prompt: Option<String>, cwd: String) -> Self {
         Self {
-            messages: vec![],
+            messages: vec![DisplayMessage::Header { cwd }],
             input: String::new(),
             cursor_pos: 0,
             agent_busy: false,
@@ -423,6 +479,57 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for msg in messages {
         match msg {
+            DisplayMessage::Header { cwd } => {
+                lines.push(Line::raw(""));
+                for (term_row, pair) in CORGI_PIXELS.chunks(2).enumerate() {
+                    let upper = &pair[0];
+                    let lower = &pair[1];
+                    let mut spans: Vec<Span<'static>> = upper
+                        .iter()
+                        .zip(lower.iter())
+                        .map(|(&u, &l)| {
+                            if u == 0 && l == 0 {
+                                Span::raw(" ")
+                            } else {
+                                let fg = pixel_color(l).unwrap_or(Color::Reset);
+                                let bg = pixel_color(u).unwrap_or(Color::Reset);
+                                Span::styled("▄", Style::default().fg(fg).bg(bg))
+                            }
+                        })
+                        .collect();
+                    match term_row {
+                        1 => {
+                            spans.push(Span::styled(
+                                "  Ein",
+                                Style::default()
+                                    .fg(Color::Rgb(230, 200, 120))
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            spans.push(Span::styled(
+                                format!("  v{VERSION}"),
+                                Style::default().fg(MUTED_COLOR),
+                            ));
+                        }
+                        3 => {
+                            let display_cwd = dirs::home_dir()
+                                .and_then(|h| {
+                                    std::path::Path::new(cwd.as_str())
+                                        .strip_prefix(&h)
+                                        .ok()
+                                        .map(|rel| format!("~/{}", rel.display()))
+                                })
+                                .unwrap_or_else(|| cwd.clone());
+                            spans.push(Span::styled(
+                                format!("  {display_cwd}"),
+                                Style::default().fg(THINKING_COLOR),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    lines.push(Line::from(spans));
+                }
+                lines.push(Line::raw(""));
+            }
             DisplayMessage::User(text) => {
                 lines.push(Line::from(vec![
                     Span::styled("You: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -436,7 +543,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::raw(""));
             }
-            DisplayMessage::ToolCall(name, arg) => {
+            DisplayMessage::ToolCall { name, arg, output_lines } => {
                 // "▸ ToolName  arg" — indicator and name in steel blue, arg muted.
                 let mut spans = vec![
                     Span::styled(" ▸ ", Style::default().fg(TOOL_NAME_COLOR)),
@@ -454,6 +561,14 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                     ));
                 }
                 lines.push(Line::from(spans));
+                // Show the last ≤8 lines of streamed output, indented.
+                let skip = output_lines.len().saturating_sub(8);
+                for output_line in output_lines.iter().skip(skip) {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {output_line}"),
+                        Style::default().fg(MUTED_COLOR),
+                    )));
+                }
                 lines.push(Line::raw(""));
             }
             DisplayMessage::EditCall {
@@ -471,10 +586,7 @@ fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                             .fg(TOOL_NAME_COLOR)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  {file_path}"),
-                        Style::default().fg(MUTED_COLOR),
-                    ),
+                    Span::styled(format!("  {file_path}"), Style::default().fg(MUTED_COLOR)),
                 ]));
 
                 let ps = syntax_set();
@@ -671,7 +783,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
         }
         Some(ServerEvent::ToolCallStart(t)) => {
             let (name, arg) = parse_tool_call(&t.tool_name, &t.arguments);
-            app.messages.push(DisplayMessage::ToolCall(name, arg));
+            app.messages.push(DisplayMessage::ToolCall { name, arg, output_lines: vec![] });
             app.auto_scroll = true;
         }
         Some(ServerEvent::ToolCallEnd(t)) => {
@@ -679,10 +791,8 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             // ToolCall placeholder that was pushed at ToolCallStart.
             if t.tool_name == "Edit" && !t.metadata.is_empty() {
                 if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&t.metadata) {
-                    let start_line = meta
-                        .get("start_line")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(1) as u32;
+                    let start_line =
+                        meta.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
                     let parse_lines = |key: &str| -> Vec<String> {
                         meta.get(key)
                             .and_then(|v| v.as_array())
@@ -697,7 +807,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
                     let new_lines = parse_lines("new_lines");
 
                     for msg in app.messages.iter_mut().rev() {
-                        if let DisplayMessage::ToolCall(name, file_path_opt) = msg {
+                        if let DisplayMessage::ToolCall { name, arg: file_path_opt, .. } = msg {
                             if name == "Edit" {
                                 let file_path = file_path_opt.clone().unwrap_or_default();
                                 *msg = DisplayMessage::EditCall {
@@ -728,6 +838,12 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
         }
         Some(ServerEvent::TokenUsage(u)) => {
             app.cumulative_tokens = u.total_tokens;
+        }
+        Some(ServerEvent::ToolOutputChunk(c)) => {
+            if let Some(DisplayMessage::ToolCall { output_lines, .. }) = app.messages.last_mut() {
+                output_lines.push(c.output);
+                app.auto_scroll = true;
+            }
         }
         None => {}
     }
@@ -849,10 +965,12 @@ async fn main() -> anyhow::Result<()> {
         .map(|(_, m)| m.to_string())
         .unwrap_or_else(|| cfg.model.clone());
 
-    // Collect the cwd for the startup modal (shown before connecting).
+    // Collect the cwd for the startup modal (shown before connecting) and
+    // for the welcome header in the conversation pane.
     let cwd_str = std::env::current_dir()
         .ok()
         .map(|p| p.display().to_string());
+    let cwd_display = cwd_str.clone().unwrap_or_else(|| "unknown".to_string());
 
     let (event_tx, mut event_rx) = mpsc::channel::<AppEvent>(64);
 
@@ -873,7 +991,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(model_display, cwd_str);
+    let mut app = App::new(model_display, cwd_str, cwd_display);
     let mut term_events = EventStream::new();
     // Ticker drives the thinking spinner; only app.tick is incremented when
     // the agent is busy, so the timer is cheap when idle.

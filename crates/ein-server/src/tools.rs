@@ -1,8 +1,10 @@
 use crate::bindings::Plugin;
+use ein_proto::ein::AgentEvent;
 use ein_tool::{ToolDef, ToolResult};
 use serde_json::Value;
 use std::{collections, net::IpAddr, path::Path, sync::Arc};
-use tokio::fs;
+use tokio::{fs, sync::mpsc};
+use tonic::Status;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
 
@@ -64,6 +66,8 @@ impl WasmTool {
             crate::HarnessState {
                 wasi_ctx: wasi,
                 resource_table: ResourceTable::new(),
+                chunk_tx: None,
+                tool_call_id: String::new(),
             },
         );
 
@@ -96,6 +100,29 @@ impl WasmTool {
 
     pub fn schema(&self) -> &ToolDef {
         &self.schema
+    }
+
+    pub async fn enable_chunk_sender(&mut self) -> anyhow::Result<bool> {
+        let res = self
+            .bindings
+            .tool()
+            .tool()
+            .call_enable_chunk_sender(&mut self.store, self.handle)
+            .await?;
+
+        Ok(res)
+    }
+
+    /// Injects the gRPC event sender and tool call ID into the store so the
+    /// `spawn` host syscall can stream stdout lines as `ToolOutputChunk` events.
+    pub fn set_chunk_sender(
+        &mut self,
+        tx: mpsc::Sender<Result<AgentEvent, Status>>,
+        tool_call_id: String,
+    ) {
+        let state = self.store.data_mut();
+        state.chunk_tx = Some(tx);
+        state.tool_call_id = tool_call_id;
     }
 
     pub async fn call(&mut self, id: &str, args: &str) -> anyhow::Result<ToolResult> {

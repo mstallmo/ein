@@ -26,10 +26,11 @@ mod syscalls;
 mod tools;
 
 use clap::Parser;
-use ein_proto::ein::agent_server::AgentServer as AgentServiceServer;
+use ein_proto::ein::{AgentEvent, agent_server::AgentServer as AgentServiceServer};
 use grpc::AgentServer;
 use std::path::PathBuf;
-use tonic::transport::Server;
+use tokio::sync::mpsc;
+use tonic::{Status, transport::Server};
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
@@ -40,6 +41,11 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 pub struct HarnessState {
     pub resource_table: ResourceTable,
     pub wasi_ctx: WasiCtx,
+    /// Set by the agent loop before each Bash tool call so the `spawn` syscall
+    /// can stream stdout lines upstream as `ToolOutputChunk` events.
+    pub chunk_tx: Option<mpsc::Sender<Result<AgentEvent, Status>>>,
+    /// The tool call ID associated with the current `spawn` invocation.
+    pub tool_call_id: String,
 }
 
 impl WasiView for HarnessState {

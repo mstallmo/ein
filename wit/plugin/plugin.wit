@@ -8,6 +8,7 @@ world plugin {
             constructor();
             name: func() -> string;
             schema: func() -> string;
+            enable-chunk-sender: func() -> bool;
             call: func(id: string, args: string) -> result<string, string>;
         }
     }
