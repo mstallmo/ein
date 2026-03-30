@@ -1,4 +1,4 @@
-use ein_tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
+use ein_plugin::tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
@@ -69,4 +69,4 @@ impl ToolPlugin for EditTool {
     }
 }
 
-ein_tool::export!(EditTool);
+ein_plugin::export_tool!(EditTool);

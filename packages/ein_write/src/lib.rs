@@ -1,4 +1,4 @@
-use ein_tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
+use ein_plugin::tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 use std::{fs, io::Write};
 
@@ -60,4 +60,4 @@ impl ToolPlugin for WriteTool {
     }
 }
 
-ein_tool::export!(WriteTool);
+ein_plugin::export_tool!(WriteTool);

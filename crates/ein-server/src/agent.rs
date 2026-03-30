@@ -26,7 +26,7 @@
 //! ```
 
 use anyhow::anyhow;
-use ein_model_client::{CompletionRequest, FinishReason, ToolCall};
+use ein_plugin::model_client::{CompletionRequest, FinishReason, FunctionCall, ToolCall};
 use ein_proto::ein::{
     AgentError, AgentEvent, AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart,
     agent_event::Event,
@@ -232,7 +232,7 @@ async fn handle_tool_call(
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
     tool_registry: &mut ToolRegistry,
     id: &String,
-    function: &ein_model_client::FunctionCall,
+    function: &FunctionCall,
 ) -> (String, String) {
     match tool_registry.get(function.name.as_str()) {
         Some(tool) => {

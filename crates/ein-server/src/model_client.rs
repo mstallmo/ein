@@ -1,4 +1,4 @@
-use ein_model_client::{CompletionRequest, CompletionResponse};
+use ein_plugin::model_client::{CompletionRequest, CompletionResponse};
 use std::collections::HashSet;
 use std::path::Path;
 use wasmtime::{Engine, Store, component::*};

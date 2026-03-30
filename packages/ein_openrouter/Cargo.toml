@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow           = { workspace = true }
-ein_model_client = { path = "../ein_model_client" }
+ein_plugin = { path = "../ein_plugin" }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 wit-bindgen      = { workspace = true }

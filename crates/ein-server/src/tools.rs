@@ -1,6 +1,6 @@
 use crate::{HarnessState, bindings::Plugin};
 use ein_proto::ein::{AgentEvent, PluginConfig};
-use ein_tool::{ToolDef, ToolResult};
+use ein_plugin::tool::{ToolDef, ToolResult};
 use serde_json::Value;
 use std::{collections::{self, HashMap}, net::IpAddr, path::Path, sync::Arc};
 use tokio::{fs, sync::mpsc};

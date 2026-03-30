@@ -1,11 +1,11 @@
 pub mod syscalls {
-    pub use crate::model_client::ein::model_client::host::*;
+    pub use crate::model_client::__wit::ein::model_client::host::*;
 }
 
 pub use ein_http::{HttpRequest, HttpResponse};
 
 #[doc(hidden)]
-pub mod model_client {
+pub mod __wit {
     use super::ConstructableModelClientPlugin;
     use wit_bindgen::generate;
 
@@ -14,7 +14,7 @@ pub mod model_client {
         path: "../../wit/model_client",
         export_macro_name: "__export_model_client_inner",
         pub_export_macro: true,
-        default_bindings_module: "ein_model_client::model_client"
+        default_bindings_module: "ein_plugin::model_client::__wit"
     });
 
     impl<T> exports::model_client::Guest for T
@@ -39,13 +39,11 @@ pub mod model_client {
 }
 
 #[macro_export]
-macro_rules! __export_model_client {
+macro_rules! export_model_client {
     ($($t:tt)*) => {
-        $crate::model_client::__export_model_client_inner!($($t)*);
+        $crate::model_client::__wit::__export_model_client_inner!($($t)*);
     };
 }
-
-pub use __export_model_client as export;
 
 pub trait ConstructableModelClientPlugin: ModelClientPlugin {
     fn new(config_json: &str) -> Self;
