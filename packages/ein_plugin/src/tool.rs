@@ -1,5 +1,6 @@
 pub mod syscalls {
-    pub use crate::tool::__wit::ein::plugin::host::{log, spawn};
+    pub use crate::tool::__wit::ein::host::host::log;
+    pub use crate::tool::__wit::ein::plugin::process::spawn;
 }
 
 #[doc(hidden)]
@@ -12,7 +13,8 @@ pub mod __wit {
         path: "../../wit/plugin",
         export_macro_name: "__export_plugin_inner",
         pub_export_macro: true,
-        default_bindings_module: "ein_plugin::tool::__wit"
+        default_bindings_module: "ein_plugin::tool::__wit",
+        with: { "ein:host/host": generate }
     });
 
     impl<T> exports::tool::Guest for T

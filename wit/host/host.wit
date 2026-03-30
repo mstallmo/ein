@@ -1,4 +1,4 @@
-package ein:model-client;
+package ein:host;
 
 interface host {
     log: func(msg: string);

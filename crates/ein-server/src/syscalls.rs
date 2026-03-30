@@ -2,11 +2,13 @@ use ein_proto::ein::{AgentEvent, ToolOutputChunk, agent_event::Event};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-impl crate::bindings::ein::plugin::host::Host for crate::HarnessState {
+impl crate::bindings::ein::host::host::Host for crate::HarnessState {
     async fn log(&mut self, msg: String) {
         println!("[plugin] {msg}");
     }
+}
 
+impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
     async fn spawn(&mut self, args: String) -> Result<String, String> {
         println!("[plugin] spawning new process: {args}");
 
@@ -61,5 +63,11 @@ impl crate::bindings::ein::plugin::host::Host for crate::HarnessState {
             "Exit code: {}\nStdout:\n{stdout_buf}\nStderr:\n{stderr_buf}",
             status.code().unwrap_or(-1)
         ))
+    }
+}
+
+impl crate::model_client_bindings::ein::host::host::Host for crate::ModelClientHarnessState {
+    async fn log(&mut self, msg: String) {
+        println!("[model client] {msg}");
     }
 }

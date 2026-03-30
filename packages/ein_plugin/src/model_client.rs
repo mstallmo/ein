@@ -1,5 +1,5 @@
 pub mod syscalls {
-    pub use crate::model_client::__wit::ein::model_client::host::*;
+    pub use crate::model_client::__wit::ein::host::host::log;
 }
 
 pub use ein_http::{HttpRequest, HttpResponse};
@@ -14,7 +14,8 @@ pub mod __wit {
         path: "../../wit/model_client",
         export_macro_name: "__export_model_client_inner",
         pub_export_macro: true,
-        default_bindings_module: "ein_plugin::model_client::__wit"
+        default_bindings_module: "ein_plugin::model_client::__wit",
+        with: { "ein:host/host": generate }
     });
 
     impl<T> exports::model_client::Guest for T

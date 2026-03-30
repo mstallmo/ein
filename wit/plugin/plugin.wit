@@ -1,7 +1,8 @@
 package ein:plugin;
 
 world plugin {
-    import host;
+    import ein:host/host;
+    import process;
 
     export tool: interface {
         resource tool {
