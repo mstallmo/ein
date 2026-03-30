@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use ein_tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
+use ein_plugin::tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 
 #[derive(Debug, Clone)]
@@ -38,10 +38,10 @@ impl ToolPlugin for BashTool {
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: BashArgs = serde_json::from_str(&args)?;
 
-        let result = ein_tool::syscalls::spawn(&args.command).map_err(|err| anyhow!(err))?;
+        let result = ein_plugin::tool::syscalls::spawn(&args.command).map_err(|err| anyhow!(err))?;
 
         Ok(ToolResult::new(id, result))
     }
 }
 
-ein_tool::export!(BashTool);
+ein_plugin::export_tool!(BashTool);

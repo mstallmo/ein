@@ -1,9 +1,10 @@
 pub mod syscalls {
-    pub use crate::tool::ein::plugin::host::{log, spawn};
+    pub use crate::tool::__wit::ein::host::host::log;
+    pub use crate::tool::__wit::ein::plugin::process::spawn;
 }
 
 #[doc(hidden)]
-pub mod tool {
+pub mod __wit {
     use super::ConstructableToolPlugin;
     use wit_bindgen::generate;
 
@@ -12,7 +13,8 @@ pub mod tool {
         path: "../../wit/plugin",
         export_macro_name: "__export_plugin_inner",
         pub_export_macro: true,
-        default_bindings_module: "ein_tool::tool"
+        default_bindings_module: "ein_plugin::tool::__wit",
+        with: { "ein:host/host": generate }
     });
 
     impl<T> exports::tool::Guest for T
@@ -56,13 +58,11 @@ pub mod tool {
 }
 
 #[macro_export]
-macro_rules! __export_plugin {
+macro_rules! export_tool {
     ($($t:tt)*) => {
-        $crate::tool::__export_plugin_inner!($($t)*);
+        $crate::tool::__wit::__export_plugin_inner!($($t)*);
     };
 }
-
-pub use __export_plugin as export;
 
 use serde::{
     Deserialize, Serialize,

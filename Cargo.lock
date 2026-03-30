@@ -824,8 +824,7 @@ dependencies = [
  "clap",
  "dirs",
  "ein-proto",
- "ein_model_client",
- "ein_tool",
+ "ein_plugin",
  "hyper",
  "serde",
  "serde_json",
@@ -860,7 +859,7 @@ name = "ein_bash"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_tool",
+ "ein_plugin",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
@@ -871,7 +870,7 @@ name = "ein_edit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_tool",
+ "ein_plugin",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
@@ -888,7 +887,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "ein_model_client"
+name = "ein_openrouter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ein_plugin",
+ "serde",
+ "serde_json",
+ "wit-bindgen 0.53.1",
+]
+
+[[package]]
+name = "ein_plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -899,32 +909,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "ein_openrouter"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ein_model_client",
- "serde",
- "serde_json",
- "wit-bindgen 0.53.1",
-]
-
-[[package]]
 name = "ein_read"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_tool",
- "serde",
- "serde_json",
- "wit-bindgen 0.53.1",
-]
-
-[[package]]
-name = "ein_tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
+ "ein_plugin",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
@@ -935,7 +924,7 @@ name = "ein_write"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ein_tool",
+ "ein_plugin",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",

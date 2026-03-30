@@ -11,7 +11,7 @@
 // retries — without any changes to the plugin interface or the host.
 
 use anyhow::anyhow;
-use ein_model_client::{
+use ein_plugin::model_client::{
     CompletionRequest, CompletionResponse, ConstructableModelClientPlugin, HttpRequest,
     ModelClientPlugin,
 };
@@ -68,4 +68,4 @@ impl ModelClientPlugin for OpenRouterPlugin {
     }
 }
 
-ein_model_client::export!(OpenRouterPlugin);
+ein_plugin::export_model_client!(OpenRouterPlugin);
