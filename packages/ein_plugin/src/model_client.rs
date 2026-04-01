@@ -103,6 +103,8 @@ pub struct Choice {
 pub enum FinishReason {
     Stop,
     ToolCalls,
+    #[serde(other)]
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

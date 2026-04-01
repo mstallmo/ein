@@ -2,10 +2,15 @@
 // Copyright 2026 Mason Stallmo
 
 use crate::{HarnessState, bindings::Plugin};
-use ein_proto::ein::{AgentEvent, PluginConfig};
 use ein_plugin::tool::{ToolDef, ToolResult};
+use ein_proto::ein::{AgentEvent, PluginConfig};
 use serde_json::Value;
-use std::{collections::{self, HashMap}, net::IpAddr, path::Path, sync::Arc};
+use std::{
+    collections::{self, HashMap},
+    net::IpAddr,
+    path::Path,
+    sync::Arc,
+};
 use tokio::{fs, sync::mpsc};
 use tonic::Status;
 use wasmtime::{Engine, Store, component::*};
@@ -158,7 +163,15 @@ impl ToolRegistry {
     ) -> anyhow::Result<Self> {
         let mut registry = Self::new();
 
-        let mut entries = fs::read_dir(plugin_dir.as_ref()).await?;
+        let mut entries = fs::read_dir(plugin_dir.as_ref()).await.map_err(|e| {
+            let dir = plugin_dir.as_ref().display();
+            anyhow::anyhow!(
+                "Plugin directory not found: {dir}\n\n\
+                 In debug builds, run `cargo build --target wasm32-wasip2` first.\n\
+                 In release builds, run `./scripts/build_install_plugins.sh`.\n\
+                 Details: {e}"
+            )
+        })?;
 
         loop {
             match entries.next_entry().await {
@@ -186,7 +199,16 @@ impl ToolRegistry {
                             &merged_paths,
                             &merged_hosts,
                         )
-                        .await?;
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to load plugin '{}': {e}\n\n\
+                                 In debug builds try rebuilding with 'cargo build -p {} --target wasm32-wasip2'
+                                 In release build try rebuilding with `./scripts/build_install_plugins.sh`.",
+                                entry.path().display(),
+                                stem
+                            )
+                        })?;
                         registry.add_tool(tool);
                     }
                 }

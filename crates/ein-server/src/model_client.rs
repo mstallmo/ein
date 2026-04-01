@@ -113,7 +113,9 @@ pub async fn load_model_client_component(
     }
 
     anyhow::bail!(
-        "no model client plugin found in {}",
+        "No model client plugin found in {}.\n\n\
+         In debug builds, run `cargo build --target wasm32-wasip2 -p ein_openrouter` first.\n\
+         In release builds, run `./scripts/build_install_plugins.sh`.",
         model_client_dir.display()
     )
 }

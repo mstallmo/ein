@@ -225,6 +225,21 @@ pub async fn run_agent(
                     .await;
                 break;
             }
+            FinishReason::Unsupported => {
+                let _ = tx
+                    .send(Ok(AgentEvent {
+                        event: Some(Event::AgentError(AgentError {
+                            message: "The model stopped with an unsupported finish reason. \
+                                      This model may not support tool calling.\n\n\
+                                      Try switching to a model that supports function calling \
+                                      (e.g. anthropic/claude-haiku-4-5) by setting `model` \
+                                      in ~/.ein/config.json."
+                                .to_string(),
+                        })),
+                    }))
+                    .await;
+                return Ok(());
+            }
         }
     }
 
