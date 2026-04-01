@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 use crate::{HarnessState, bindings::Plugin};
 use ein_proto::ein::{AgentEvent, PluginConfig};
 use ein_plugin::tool::{ToolDef, ToolResult};

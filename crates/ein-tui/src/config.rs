@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 use std::collections::HashMap;
 
 /// Per-plugin configuration stored in `~/.ein/config.json`.

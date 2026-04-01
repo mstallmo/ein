@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 pub mod syscalls {
     pub use crate::tool::__wit::ein::host::host::log;
     pub use crate::tool::__wit::ein::plugin::process::spawn;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 //! Ein server binary.
 //!
 //! Starts a gRPC server that exposes the `Agent` service defined in
