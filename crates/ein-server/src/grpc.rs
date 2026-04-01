@@ -110,9 +110,7 @@ fn extract_model_params(
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(2500);
 
-    let plugin_extra_hosts = pc
-        .map(|p| p.allowed_hosts.as_slice())
-        .unwrap_or(&[]);
+    let plugin_extra_hosts = pc.map(|p| p.allowed_hosts.as_slice()).unwrap_or(&[]);
     let (model_config_json, derived_hosts) = build_model_config(&api_key, &base_url);
     let allowed_hosts = merge_dedup(&derived_hosts, plugin_extra_hosts);
 

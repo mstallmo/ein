@@ -41,7 +41,8 @@ impl ToolPlugin for BashTool {
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: BashArgs = serde_json::from_str(&args)?;
 
-        let result = ein_plugin::tool::syscalls::spawn(&args.command).map_err(|err| anyhow!(err))?;
+        let result =
+            ein_plugin::tool::syscalls::spawn(&args.command).map_err(|err| anyhow!(err))?;
 
         Ok(ToolResult::new(id, result))
     }

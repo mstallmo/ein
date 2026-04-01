@@ -109,8 +109,7 @@ impl ModelClientPlugin for OpenRouterPlugin {
                 return Err(anyhow!("{msg}{hint}"));
             }
             s if !(200..300).contains(&s) => {
-                let msg = extract_api_error(&resp.body)
-                    .unwrap_or_else(|| format!("HTTP {s}"));
+                let msg = extract_api_error(&resp.body).unwrap_or_else(|| format!("HTTP {s}"));
                 return Err(anyhow!("API error: {msg}"));
             }
             _ => {}
