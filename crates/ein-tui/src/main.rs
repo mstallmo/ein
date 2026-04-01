@@ -1195,6 +1195,17 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
 
+                        // Reject unrecognized slash commands — display a local error, do not send to server.
+                        if text.starts_with('/') {
+                            let cmd = text.split_whitespace().next().unwrap_or(&text);
+                            app.messages.push(DisplayMessage::Error(format!(
+                                "Unknown command: {}",
+                                cmd
+                            )));
+                            app.auto_scroll = true;
+                            continue;
+                        }
+
                         // Prompts require an active connection.
                         if app.prompt_tx.is_none() {
                             continue;

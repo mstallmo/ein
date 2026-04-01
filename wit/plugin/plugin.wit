@@ -1,7 +1,7 @@
+package ein:plugin;
+
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
-
-package ein:plugin;
 
 world plugin {
     import ein:host/host;
