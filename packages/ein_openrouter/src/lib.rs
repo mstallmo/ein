@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 // NOTE: This plugin uses `ein_model_client::HttpRequest` (backed by `wstd` via
 // `ein_http`) rather than `reqwest` or `async-openai` directly.
 //

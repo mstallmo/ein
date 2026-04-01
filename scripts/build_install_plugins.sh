@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mason Stallmo
 
 TOOLS_DIR=~/.ein/plugins/tools
 MODEL_CLIENTS_DIR=~/.ein/plugins/model_clients

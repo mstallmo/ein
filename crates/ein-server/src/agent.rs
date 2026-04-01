@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 //! Core agent loop.
 //!
 //! [`run_agent`] drives a single conversation turn: it sends the current

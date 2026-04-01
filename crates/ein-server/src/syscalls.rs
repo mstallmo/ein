@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 use ein_proto::ein::{AgentEvent, ToolOutputChunk, agent_event::Event};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};

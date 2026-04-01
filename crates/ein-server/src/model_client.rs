@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 use ein_plugin::model_client::{CompletionRequest, CompletionResponse};
 use std::collections::HashSet;
 use std::path::Path;

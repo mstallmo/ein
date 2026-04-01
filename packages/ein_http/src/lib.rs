@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mason Stallmo
+
 //! Ergonomic HTTP client for `wasm32-wasip2` WASM components.
 //!
 //! Wraps [`wstd::http`] with a reqwest-style builder API. HTTP calls are

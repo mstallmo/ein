@@ -187,3 +187,11 @@ packages/
 ```
 
 The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output. A `config_update` message variant allows the TUI to push plugin config changes to a live session without reconnecting.
+
+## License
+
+Ein is licensed under the [Apache License, Version 2.0](LICENSE).
+
+Copyright 2026 Mason Stallmo.
+
+By submitting a pull request, you agree that your contribution is licensed under the Apache License, Version 2.0.
