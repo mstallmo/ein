@@ -23,13 +23,13 @@ Plugins (Bash, Read, Write) are WASM components compiled separately:
 
 In debug builds plugins are loaded from `./target/wasm32-wasip2/debug/` automatically — no installation needed.
 
-Credentials are configured in `~/.ein/config.json` (created on first TUI launch). Add `api_key` and `base_url` under `plugin_configs["ein_openrouter"].config` before running:
+Credentials are configured in `~/.ein/config.json` (created on first TUI launch). Add `api_key` and `base_url` under `plugin_configs["ein_openrouter"].params` before running:
 
 ```json
 {
   "plugin_configs": {
     "ein_openrouter": {
-      "config": {
+      "params": {
         "api_key": "sk-or-...",
         "base_url": "https://openrouter.ai/api/v1"
       }
@@ -80,9 +80,9 @@ Each connection goes through three message types (all variants of `UserInput`):
 `SessionConfig` carries:
 - `allowed_paths` — filesystem paths preopened for all WASM plugins via `WasiCtxBuilder::preopened_dir`
 - `allowed_hosts` — hostnames all WASM plugins may connect to (empty = deny all; `"*"` = allow all)
-- `plugin_configs` — map of plugin filename stem → `PluginConfig`; each entry has its own `allowed_paths`/`allowed_hosts` (merged with the global lists) and a `config` string map for plugin-specific parameters
+- `plugin_configs` — map of plugin filename stem → `PluginConfig`; each entry has its own `allowed_paths`/`allowed_hosts` (merged with the global lists) and a `params` JSON object for plugin-specific parameters
 
-Known `plugin_configs` keys and their `config` entries:
+Known `plugin_configs` keys and their `params` entries:
 - `"ein_openrouter"` — `api_key`, `base_url` (empty = deny all outbound; `"*"` = allow all; real URL = restrict to that host), `model`, `max_tokens`
 
 ### Client config (`crates/ein-tui/src/config.rs`)

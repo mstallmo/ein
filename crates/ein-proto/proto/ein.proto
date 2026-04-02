@@ -25,9 +25,9 @@ message UserInput {
 // a plugin is instantiated: allowed_paths and allowed_hosts are unioned with
 // the global lists; config entries are plugin-specific key-value pairs.
 message PluginConfig {
-    repeated string       allowed_paths = 1;
-    repeated string       allowed_hosts = 2;
-    map<string, string>   config        = 3;
+    repeated string allowed_paths = 1;
+    repeated string allowed_hosts = 2;
+    string          params_json   = 3;
 }
 
 // Sent as the first UserInput to configure the session before any prompts.

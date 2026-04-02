@@ -81,7 +81,7 @@ impl ModelClientPlugin for OllamaPlugin {
                          \n\
                          \"plugin_configs\": {{\n\
                          \"ein_ollama\": {{\n\
-                             \"config\": {{\n\
+                             \"params\": {{\n\
                              \"base_url\": \"{}\"\n\
                              }}\n\
                          }}\n\
@@ -108,7 +108,7 @@ impl ModelClientPlugin for OllamaPlugin {
                      Most local Ollama instances do not require authentication.\n\
                      If your deployment uses a bearer token, set it in \
                      ~/.ein/config.json under \
-                     plugin_configs.ein_ollama.config.api_key"
+                     plugin_configs.ein_ollama.params.api_key"
                 ));
             }
             402 => {

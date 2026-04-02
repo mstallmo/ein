@@ -995,7 +995,8 @@ fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
                     ProtoPluginConfig {
                         allowed_paths: v.allowed_paths.clone(),
                         allowed_hosts: v.allowed_hosts.clone(),
-                        config: v.config.clone(),
+                        params_json: serde_json::to_string(&v.params)
+                            .unwrap_or_else(|_| "{}".to_string()),
                     },
                 )
             })
@@ -1105,7 +1106,12 @@ async fn main() -> anyhow::Result<()> {
     let model_full = cfg
         .plugin_configs
         .values()
-        .find_map(|pc| pc.config.get("model").cloned())
+        .find_map(|pc| {
+            pc.params
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
         .unwrap_or_else(|| "anthropic/claude-haiku-4.5".to_string());
     let model_display = model_full
         .split_once('/')

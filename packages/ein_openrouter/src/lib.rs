@@ -85,7 +85,7 @@ impl ModelClientPlugin for OpenRouterPlugin {
                 return Err(anyhow!(
                     "{msg}\n\n\
                      Set your api_key in ~/.ein/config.json under \
-                     plugin_configs.ein_openrouter.config.api_key"
+                     plugin_configs.ein_openrouter.params.api_key"
                 ));
             }
             402 => {

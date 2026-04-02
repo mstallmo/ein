@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use ein_plugin::model_client::{CompletionRequest, CompletionResponse};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -57,7 +57,7 @@ impl ModelClientSessionManager {
             &session_cfg.model_client_name
         };
 
-        let (config_json, allowed_hosts, session_params) =
+        let (params_json, allowed_hosts, session_params) =
             extract_model_params(session_cfg, model_client_name);
 
         if allowed_hosts.is_empty() {
@@ -75,12 +75,12 @@ impl ModelClientSessionManager {
             })?;
 
         let client =
-            instantiate_model_client(&self.engine, &instance_pre, &config_json, &allowed_hosts)
+            instantiate_model_client(&self.engine, &instance_pre, &params_json, &allowed_hosts)
                 .await
                 .map_err(|err| anyhow!("Failed to instantiate model client: {err}"))?;
 
         println!(
-            "[session] config: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
+            "[session] params: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
             session_params.model,
             session_params.max_tokens,
             session_cfg.allowed_paths,
@@ -98,61 +98,62 @@ impl ModelClientSessionManager {
     }
 }
 
-/// Extracts model client parameters from a `SessionConfig`. Uses
-/// `session_cfg.model_client_name` to identify the plugin, falling back to
-/// `fallback_name` when the client sends an empty string.
+/// Extracts model client parameters from a `SessionConfig`.
 ///
-/// Returns the JSON config string, resolved allowed-hosts list, session
-/// parameters, and the resolved plugin name.
+/// Parses `config_json` from the plugin's `PluginConfig` entry, extracts the fields
+/// needed for session setup, and returns the raw `config_json` to pass directly to
+/// the WASM plugin constructor.
 fn extract_model_params(
     session_cfg: &ein_proto::ein::SessionConfig,
     model_client_name: &str,
 ) -> (String, Vec<String>, SessionParams) {
     let pc = session_cfg.plugin_configs.get(model_client_name);
-    let api_key = pc
-        .and_then(|p| p.config.get("api_key"))
-        .cloned()
+
+    let config: serde_json::Value = pc
+        .map(|p| serde_json::from_str(&p.params_json).unwrap_or_default())
         .unwrap_or_default();
-    let base_url = pc
-        .and_then(|p| p.config.get("base_url"))
-        .cloned()
-        .unwrap_or_default();
-    let model = pc
-        .and_then(|p| p.config.get("model"))
-        .cloned()
+
+    let base_url = config["base_url"].as_str().unwrap_or_default();
+    let model = config["model"]
+        .as_str()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "anthropic/claude-haiku-4.5".to_string());
-    let max_tokens = pc
-        .and_then(|p| p.config.get("max_tokens"))
-        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or("anthropic/claude-haiku-4.5")
+        .to_string();
+    let max_tokens = config["max_tokens"]
+        .as_i64()
+        .map(|n| n as i32)
         .unwrap_or(2500);
 
     if pc.map(|p| !p.allowed_hosts.is_empty()).unwrap_or(false) {
         eprintln!(
-            "[model_client] The `allowed_hosts` config option for model clients is ignored. Only the `base_url` is configured as an allowed host"
+            "[model_client] The `allowed_hosts` config option for model clients is ignored. \
+             Only the `base_url` is used to derive the allowed host."
         );
     }
 
-    let (model_config_json, allowed_hosts) = build_model_config(&api_key, &base_url);
+    let allowed_hosts = derive_allowed_hosts(base_url);
+    let params_json = pc
+        .map(|p| p.params_json.clone())
+        .unwrap_or_else(|| "{}".to_string());
 
-    let params = SessionParams { model, max_tokens };
-    (model_config_json, allowed_hosts, params)
+    (
+        params_json,
+        allowed_hosts,
+        SessionParams { model, max_tokens },
+    )
 }
 
-/// Builds the JSON config and allowed-hosts list for a model client instantiation.
+/// Derives the outbound host allowlist from a `base_url`.
 ///
-/// - Empty `base_url` → deny all outbound hosts (`[]`).
-/// - `base_url == "*"` → allow all hosts; `"*"` is NOT forwarded to the plugin as a URL.
-/// - Any real URL → extract the hostname and allowlist only that host.
-fn build_model_config(api_key: &str, base_url: &str) -> (String, Vec<String>) {
-    let mut config = json!({ "api_key": api_key });
-
-    let allowed_hosts = if base_url.is_empty() {
+/// - Empty → deny all (`[]`).
+/// - `"*"` → allow all.
+/// - Any real URL → extract and allowlist only the hostname.
+fn derive_allowed_hosts(base_url: &str) -> Vec<String> {
+    if base_url.is_empty() {
         vec![]
     } else if base_url == "*" {
         vec!["*".to_string()]
     } else {
-        config["base_url"] = base_url.into();
         base_url
             .trim_start_matches("https://")
             .trim_start_matches("http://")
@@ -161,9 +162,7 @@ fn build_model_config(api_key: &str, base_url: &str) -> (String, Vec<String>) {
             .and_then(|authority| authority.split(':').next())
             .map(|host| vec![host.to_string()])
             .unwrap_or_default()
-    };
-
-    (config.to_string(), allowed_hosts)
+    }
 }
 
 pub struct ModelClientSession {
@@ -206,7 +205,7 @@ impl WasmModelClient {
     async fn load(
         engine: &Engine,
         instance_pre: &ModelClientPre<ModelClientHarnessState>,
-        config_json: &str,
+        params_json: &str,
         allowed_hosts: HashSet<String>,
     ) -> anyhow::Result<Self> {
         let wasi = WasiCtxBuilder::new().inherit_stdio().build();
@@ -224,7 +223,7 @@ impl WasmModelClient {
         let bindings = instance_pre.instantiate_async(&mut store).await?;
 
         let accessor = bindings.model_client().model_client();
-        let handle = accessor.call_constructor(&mut store, config_json).await?;
+        let handle = accessor.call_constructor(&mut store, params_json).await?;
 
         Ok(Self {
             store,
@@ -282,7 +281,7 @@ async fn scan_model_client_name(model_client_dir: &Path) -> Option<String> {
         if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
             if let Some(file_name) = path.file_name() {
                 println!(
-                    "[model_client] Selected {} as model client",
+                    "[model_client] Selected {} as fallback model client",
                     file_name.display()
                 );
             }
@@ -323,7 +322,7 @@ async fn compile_model_client_component(
 async fn instantiate_model_client(
     engine: &Engine,
     instance_pre: &ModelClientPre<ModelClientHarnessState>,
-    config_json: &str,
+    params_json: &str,
     allowed_hosts: &[String],
 ) -> anyhow::Result<WasmModelClient> {
     let allowed_hosts: HashSet<String> = if allowed_hosts.iter().any(|h| h == "*") {
@@ -332,7 +331,7 @@ async fn instantiate_model_client(
         allowed_hosts.iter().cloned().collect()
     };
 
-    WasmModelClient::load(engine, instance_pre, config_json, allowed_hosts).await
+    WasmModelClient::load(engine, instance_pre, params_json, allowed_hosts).await
 }
 
 #[derive(Clone)]
