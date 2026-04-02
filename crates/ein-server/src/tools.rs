@@ -70,7 +70,7 @@ impl WasmTool {
         let wasi = wasi_builder.build();
 
         let mut store = Store::new(
-            &engine,
+            engine,
             crate::HarnessState {
                 wasi_ctx: wasi,
                 resource_table: ResourceTable::new(),
@@ -267,7 +267,7 @@ pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
 ///
 /// Registers WASI p2 interface.
 pub fn build_tool_linker(engine: &Engine) -> anyhow::Result<Linker<HarnessState>> {
-    let mut linker: Linker<HarnessState> = Linker::new(&engine);
+    let mut linker: Linker<HarnessState> = Linker::new(engine);
     // Register standard WASI p2 host functions.
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     // Register Ein-specific host functions (syscalls exposed to plugins).

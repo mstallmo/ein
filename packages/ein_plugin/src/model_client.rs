@@ -5,7 +5,7 @@ pub mod syscalls {
     pub use crate::model_client::__wit::ein::host::host::log;
 }
 
-pub use ein_http::{HttpRequest, HttpResponse};
+pub use ein_http::{HttpRequest, HttpResponse, RequestDeniedError};
 
 #[doc(hidden)]
 pub mod __wit {
