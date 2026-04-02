@@ -153,16 +153,13 @@ impl HttpRequest {
                 .body(Body::from(self.body))
                 .map_err(|e| anyhow!("failed to build request: {e}"))?;
 
-            let response = Client::new()
-                .send(request)
-                .await
-                .map_err(|e| {
-                    if e.to_string().contains("HttpRequestDenied") {
-                        anyhow::Error::new(RequestDeniedError)
-                    } else {
-                        anyhow!("HTTP request failed: {e}")
-                    }
-                })?;
+            let response = Client::new().send(request).await.map_err(|e| {
+                if e.to_string().contains("HttpRequestDenied") {
+                    anyhow::Error::new(RequestDeniedError)
+                } else {
+                    anyhow!("HTTP request failed: {e}")
+                }
+            })?;
 
             let status = response.status().as_u16();
             let body_bytes = response

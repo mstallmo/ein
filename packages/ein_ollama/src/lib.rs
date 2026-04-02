@@ -73,13 +73,10 @@ impl ModelClientPlugin for OllamaPlugin {
         if let Some(key) = &self.config.api_key {
             req_builder = req_builder.bearer_auth(key);
         }
-        let resp = req_builder
-            .json(&req)?
-            .send()
-            .map_err(|e| {
-                if e.is::<RequestDeniedError>() {
-                    anyhow!(
-                        "Request to {} was blocked by the host allowlist.\n\
+        let resp = req_builder.json(&req)?.send().map_err(|e| {
+            if e.is::<RequestDeniedError>() {
+                anyhow!(
+                    "Request to {} was blocked by the host allowlist.\n\
                          Add the Ollama host to ~/.ein/config.json:\n\
                          \n\
                          \"plugin_configs\": {{\n\
@@ -89,23 +86,23 @@ impl ModelClientPlugin for OllamaPlugin {
                              }}\n\
                          }}\n\
                          }}",
-                        self.config.base_url,
-                        self.config.base_url,
-                    )
-                } else {
-                    anyhow!(
-                        "Could not connect to Ollama at {}.\n\
+                    self.config.base_url,
+                    self.config.base_url,
+                )
+            } else {
+                anyhow!(
+                    "Could not connect to Ollama at {}.\n\
                          Is Ollama running? Start it with: ollama serve\n\
                          Details: {e}",
-                        self.config.base_url
-                    )
-                }
-            })?;
+                    self.config.base_url
+                )
+            }
+        })?;
 
         match resp.status {
             401 => {
-                let msg = extract_api_error(&resp.body)
-                    .unwrap_or_else(|| "Unauthorized".to_owned());
+                let msg =
+                    extract_api_error(&resp.body).unwrap_or_else(|| "Unauthorized".to_owned());
                 return Err(anyhow!(
                     "{msg}\n\n\
                      Most local Ollama instances do not require authentication.\n\
@@ -115,13 +112,13 @@ impl ModelClientPlugin for OllamaPlugin {
                 ));
             }
             402 => {
-                let msg = extract_api_error(&resp.body)
-                    .unwrap_or_else(|| "Payment required".to_owned());
+                let msg =
+                    extract_api_error(&resp.body).unwrap_or_else(|| "Payment required".to_owned());
                 return Err(anyhow!("{msg}"));
             }
             404 => {
-                let msg = extract_api_error(&resp.body)
-                    .unwrap_or_else(|| "Model not found".to_owned());
+                let msg =
+                    extract_api_error(&resp.body).unwrap_or_else(|| "Model not found".to_owned());
                 return Err(anyhow!(
                     "{msg}\n\n\
                      The model may not be downloaded yet. Run:\n\

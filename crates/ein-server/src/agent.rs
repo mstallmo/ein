@@ -29,7 +29,7 @@
 //! ```
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{CompletionRequest, FinishReason, FunctionCall, ToolCall};
+use ein_plugin::model_client::{FinishReason, FunctionCall, ToolCall};
 use ein_proto::ein::{
     AgentError, AgentEvent, AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart,
     agent_event::Event,
@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tonic::Status;
 
-use crate::model_client::WasmModelClient;
+use crate::model_client::ModelClientSession;
 use crate::tools::ToolRegistry;
 
 // ---------------------------------------------------------------------------
@@ -65,8 +65,7 @@ pub struct SessionParams {
 pub async fn run_agent(
     messages: &mut Vec<Value>,
     tool_registry: &mut ToolRegistry,
-    model: &mut WasmModelClient,
-    session: &SessionParams,
+    model_session: &mut ModelClientSession,
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
 ) -> anyhow::Result<()> {
     let mut cumulative_prompt = 0i32;
@@ -76,17 +75,12 @@ pub async fn run_agent(
         println!(
             "[agent] sending {} messages to {} (max_tokens={})",
             messages.len(),
-            session.model,
-            session.max_tokens,
+            model_session.params().model,
+            model_session.params().max_tokens,
         );
 
-        let resp = match model
-            .complete(&CompletionRequest {
-                model: session.model.clone(),
-                messages: messages.clone(),
-                tools: tool_registry.schemas()?,
-                max_tokens: session.max_tokens,
-            })
+        let resp = match model_session
+            .complete(messages, &tool_registry.schemas()?)
             .await
         {
             Ok(r) => r,
@@ -249,7 +243,7 @@ pub async fn run_agent(
 async fn handle_tool_call(
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
     tool_registry: &mut ToolRegistry,
-    id: &String,
+    id: &str,
     function: &FunctionCall,
 ) -> (String, String) {
     match tool_registry.get(function.name.as_str()) {
@@ -257,7 +251,7 @@ async fn handle_tool_call(
             match tool.enable_chunk_sender().await {
                 Ok(should_enable_chunk_sender) => {
                     if should_enable_chunk_sender {
-                        tool.set_chunk_sender(tx.clone(), id.clone())
+                        tool.set_chunk_sender(tx.clone(), id.to_owned())
                     }
                 }
                 Err(err) => {

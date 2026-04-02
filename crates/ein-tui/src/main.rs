@@ -410,11 +410,7 @@ fn render(app: &App, frame: &mut Frame) {
     let total_rows: u16 = lines
         .iter()
         .map(|line: &Line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             if conv_width == 0 || text.is_empty() {
                 return 1u32;
             }
