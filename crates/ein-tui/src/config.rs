@@ -27,6 +27,10 @@ pub struct ClientConfig {
     /// Per-plugin configuration keyed by plugin name (e.g. "ein_openrouter", "Bash").
     #[serde(default)]
     pub plugin_configs: HashMap<String, PluginConfig>,
+    /// Name of the model client plugin to use (e.g. "ein_openrouter", "ein_ollama").
+    /// If empty, the server picks the first available plugin.
+    #[serde(default)]
+    pub model_client_name: String,
 }
 
 /// Loads `~/.ein/config.json`, creating it with defaults if absent.

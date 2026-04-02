@@ -29,6 +29,10 @@ echo "Building openrouter model client plugin..."
 cargo build --release -p ein_openrouter --target wasm32-wasip2
 echo "Done"
 
+echo "Building ollama model client plugin..."
+cargo build --release -p ein_ollama --target wasm32-wasip2
+echo "Done"
+
 ############################
 # Install                  #
 ############################
@@ -53,4 +57,8 @@ echo "Done"
 
 echo "Installing openrouter model client plugin..."
 cp target/wasm32-wasip2/release/ein_openrouter.wasm "$MODEL_CLIENTS_DIR"
+echo "Done"
+
+echo "Installing ollama model client plugin..."
+cp target/wasm32-wasip2/release/ein_ollama.wasm "$MODEL_CLIENTS_DIR"
 echo "Done"

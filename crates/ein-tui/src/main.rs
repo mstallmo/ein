@@ -395,15 +395,47 @@ fn render(app: &App, frame: &mut Frame) {
         ]));
     }
 
-    let total_lines = lines.len() as u16;
+    // Ratatui's Paragraph::scroll((y, 0)) counts *rendered* rows (after
+    // word-wrapping), not logical Line objects.  When tool output or agent
+    // text contains lines wider than the pane, each logical Line wraps into
+    // multiple rendered rows.  Using lines.len() as the scroll target would
+    // leave the spinner (the last rendered row) below the visible viewport.
+    // Compute the rendered-row total by summing each line's wrapped height.
+    //
+    // The base estimate ceil(chars / width) can undercount by one when a long
+    // word (URL, identifier, etc.) is moved to a new row by word-wrap but
+    // still overflows that row, requiring an extra hard-break.  Adding one row
+    // per word that is itself wider than the pane corrects this.
+    let conv_width = layout[0].width as usize;
+    let total_rows: u16 = lines
+        .iter()
+        .map(|line: &Line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            if conv_width == 0 || text.is_empty() {
+                return 1u32;
+            }
+            let base = ((text.chars().count() + conv_width - 1) / conv_width) as u32;
+            let extra = text
+                .split_whitespace()
+                .filter(|w| w.chars().count() > conv_width)
+                .count() as u32;
+            base + extra
+        })
+        .sum::<u32>()
+        .min(u16::MAX as u32) as u16;
+
     let viewport_height = layout[0].height;
 
-    // scroll_offset counts lines scrolled *up* from the bottom, so the
-    // ratatui scroll value (lines from the top) is the inverse.
+    // scroll_offset counts rows scrolled *up* from the bottom, so the
+    // ratatui scroll value (rows from the top) is the inverse.
     let scroll = if app.auto_scroll {
-        total_lines.saturating_sub(viewport_height)
+        total_rows.saturating_sub(viewport_height)
     } else {
-        total_lines
+        total_rows
             .saturating_sub(viewport_height)
             .saturating_sub(app.scroll_offset)
     };
@@ -972,6 +1004,7 @@ fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
                 )
             })
             .collect(),
+        model_client_name: cfg.model_client_name.clone(),
     }
 }
 

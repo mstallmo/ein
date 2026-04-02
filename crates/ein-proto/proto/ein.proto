@@ -34,7 +34,7 @@ message PluginConfig {
 //
 // Global allowed_paths and allowed_hosts apply to all plugins. Per-plugin
 // overrides (including model/credentials) live in plugin_configs, keyed by
-// plugin name (e.g. "ein_openrouter", "Bash", "Read").
+// plugin name (e.g. "ein_openrouter", "ein_ollama", "Bash", "Read").
 message SessionConfig {
     // Filesystem paths all WASM plugins are allowed to access.
     // An empty list means no filesystem access is granted globally.
@@ -44,6 +44,9 @@ message SessionConfig {
     repeated string allowed_hosts = 2;
     // Per-plugin configuration, keyed by plugin name.
     map<string, PluginConfig> plugin_configs = 3;
+    // Name of the model client plugin to use (e.g. "ein_openrouter", "ein_ollama").
+    // If empty, the server uses the first available plugin (backward compatible).
+    string model_client_name = 4;
 }
 
 message AgentEvent {

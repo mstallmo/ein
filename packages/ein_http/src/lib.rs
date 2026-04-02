@@ -26,6 +26,22 @@ use std::collections::HashMap;
 use wstd::http::{Body, Client, Request, Uri};
 use wstd::runtime::block_on;
 
+/// Returned by [`HttpRequest::send`] when the host allowlist blocks the
+/// request (`ErrorCode::HttpRequestDenied` from `wasi:http/outgoing-handler`).
+///
+/// Callers can detect this with `err.is::<RequestDeniedError>()` or
+/// `err.downcast_ref::<RequestDeniedError>()`.
+#[derive(Debug)]
+pub struct RequestDeniedError;
+
+impl std::fmt::Display for RequestDeniedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HTTP request blocked by host allowlist (HttpRequestDenied)")
+    }
+}
+
+impl std::error::Error for RequestDeniedError {}
+
 pub enum HttpMethod {
     Get,
     Post,
@@ -140,7 +156,13 @@ impl HttpRequest {
             let response = Client::new()
                 .send(request)
                 .await
-                .map_err(|e| anyhow!("HTTP request failed: {e}"))?;
+                .map_err(|e| {
+                    if e.to_string().contains("HttpRequestDenied") {
+                        anyhow::Error::new(RequestDeniedError)
+                    } else {
+                        anyhow!("HTTP request failed: {e}")
+                    }
+                })?;
 
             let status = response.status().as_u16();
             let body_bytes = response

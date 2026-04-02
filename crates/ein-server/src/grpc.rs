@@ -18,10 +18,11 @@
 //! 4. When the client closes the inbound stream, the session task exits and
 //!    plugins are unloaded.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use wasmtime::Engine;
@@ -31,7 +32,8 @@ use crate::HarnessState;
 use crate::ModelClientHarnessState;
 use crate::agent::{SessionParams, run_agent};
 use crate::model_client::{
-    build_model_client_linker, instantiate_model_client, load_model_client_component,
+    build_model_client_linker, compile_model_client_component, instantiate_model_client,
+    scan_model_client_name,
 };
 use crate::tools::{ToolRegistry, build_tool_linker, merge_dedup};
 use ein_proto::ein::{
@@ -41,18 +43,19 @@ use wasmtime::component::Component;
 
 /// gRPC service struct.
 ///
-/// Holds shared, read-only resources (Wasmtime engine, linkers, compiled
-/// model client component) behind `Arc`s so they can be cheaply cloned into
-/// each session task. The model client is instantiated per session with the
-/// session's credentials.
+/// Holds shared resources behind `Arc`s so they can be cheaply cloned into
+/// each session task. Model client plugins are compiled lazily on first use
+/// and cached — only plugins that are actually requested ever consume memory.
 pub struct AgentServer {
     config: Arc<crate::EinConfig>,
     engine: Arc<Engine>,
     model_client_linker: Arc<Linker<ModelClientHarnessState>>,
-    model_client_component: Arc<Component>,
-    /// Plugin name derived from the model client WASM filename stem
-    /// (e.g. "ein_openrouter"). Used to look up per-plugin config.
-    model_client_name: Arc<str>,
+    /// Compiled model client components, keyed by plugin name. Populated
+    /// on demand the first time a session requests a given plugin.
+    model_client_cache: Arc<Mutex<HashMap<String, Arc<Component>>>>,
+    /// Fallback plugin name when the client does not specify one — derived
+    /// by scanning the plugin directory at startup (no compilation).
+    fallback_model_client_name: Option<Arc<str>>,
     tool_linker: Arc<Linker<HarnessState>>,
 }
 
@@ -83,15 +86,23 @@ fn build_model_config(api_key: &str, base_url: &str) -> (String, Vec<String>) {
     (config.to_string(), allowed_hosts)
 }
 
-/// Extracts model client parameters from a `SessionConfig` by looking up the
-/// plugin-specific config keyed by `model_client_name`. Returns the JSON config
-/// string to pass to the plugin, the resolved allowed-hosts list, and session
-/// parameters (model + max_tokens).
+/// Extracts model client parameters from a `SessionConfig`. Uses
+/// `session_cfg.model_client_name` to identify the plugin, falling back to
+/// `fallback_name` when the client sends an empty string.
+///
+/// Returns the JSON config string, resolved allowed-hosts list, session
+/// parameters, and the resolved plugin name.
 fn extract_model_params(
     session_cfg: &ein_proto::ein::SessionConfig,
-    model_client_name: &str,
-) -> (String, Vec<String>, SessionParams) {
-    let pc = session_cfg.plugin_configs.get(model_client_name);
+    fallback_name: Option<&str>,
+) -> (String, Vec<String>, SessionParams, String) {
+    let model_client_name = if session_cfg.model_client_name.is_empty() {
+        fallback_name.unwrap_or("ein_openrouter").to_string()
+    } else {
+        session_cfg.model_client_name.clone()
+    };
+
+    let pc = session_cfg.plugin_configs.get(&model_client_name);
     let api_key = pc
         .and_then(|p| p.config.get("api_key"))
         .cloned()
@@ -115,24 +126,59 @@ fn extract_model_params(
     let allowed_hosts = merge_dedup(&derived_hosts, plugin_extra_hosts);
 
     let params = SessionParams { model, max_tokens };
-    (model_config_json, allowed_hosts, params)
+    (model_config_json, allowed_hosts, params, model_client_name)
+}
+
+/// Returns the compiled [`Component`] for `name`, compiling it from disk on
+/// first use and caching it for subsequent sessions.
+async fn get_or_compile_model_client(
+    engine: &Arc<Engine>,
+    model_client_dir: &std::path::Path,
+    cache: &Mutex<HashMap<String, Arc<Component>>>,
+    name: &str,
+) -> anyhow::Result<Arc<Component>> {
+    // Fast path: already compiled.
+    {
+        let lock = cache.lock().await;
+        if let Some(component) = lock.get(name) {
+            return Ok(component.clone());
+        }
+    }
+
+    // Slow path: compile from disk (CPU-bound, run in blocking thread pool).
+    let component = compile_model_client_component(engine, model_client_dir, name).await?;
+    let component = Arc::new(component);
+
+    // Insert into cache; if another session raced us, keep the first winner.
+    let mut lock = cache.lock().await;
+    Ok(lock.entry(name.to_string()).or_insert(component).clone())
 }
 
 impl AgentServer {
     /// Creates a new `AgentServer`.
     ///
     /// - Initialises the Wasmtime engine and pre-populates the component
-    ///   linker with WASI and the Ein plugin host functions.
-    /// - Compiles the model client WASM component once; credentials are
-    ///   supplied per-session via `SessionConfig`.
+    ///   linkers with WASI and the Ein plugin host functions.
+    /// - Scans the model client directory to determine the fallback plugin
+    ///   name; no WASM compilation happens at this point.
     pub async fn new() -> anyhow::Result<Self> {
         let engine = Engine::default();
         let config = Arc::new(crate::EinConfig::default());
 
         let model_client_linker = Arc::new(build_model_client_linker(&engine)?);
-        let (model_client_component, model_client_name) =
-            load_model_client_component(&engine, &config.model_client_dir).await?;
-        let model_client_component = Arc::new(model_client_component);
+        let fallback_model_client_name = scan_model_client_name(&config.model_client_dir)
+            .await
+            .map(Arc::from);
+
+        if let Some(ref name) = fallback_model_client_name {
+            println!("[model client] fallback plugin: {name}");
+        } else {
+            println!(
+                "[model client] no plugins found in {} — session init will fail unless \
+                 a plugin name is provided",
+                config.model_client_dir.display()
+            );
+        }
 
         let tool_linker = Arc::new(build_tool_linker(&engine)?);
 
@@ -140,8 +186,8 @@ impl AgentServer {
             config,
             engine: Arc::new(engine),
             model_client_linker,
-            model_client_component,
-            model_client_name: model_client_name.into(),
+            model_client_cache: Arc::new(Mutex::new(HashMap::new())),
+            fallback_model_client_name,
             tool_linker,
         })
     }
@@ -166,8 +212,8 @@ impl Agent for AgentServer {
         let config = self.config.clone();
         let engine = self.engine.clone();
         let model_client_linker = self.model_client_linker.clone();
-        let model_client_component = self.model_client_component.clone();
-        let model_client_name = self.model_client_name.clone();
+        let model_client_cache = self.model_client_cache.clone();
+        let fallback_model_client_name = self.fallback_model_client_name.clone();
         let tool_linker = self.tool_linker.clone();
 
         tokio::spawn(async move {
@@ -194,8 +240,8 @@ impl Agent for AgentServer {
                 }
             };
 
-            let (model_config_json, model_allowed_hosts, mut session_params) =
-                extract_model_params(&session_cfg, &model_client_name);
+            let (model_config_json, model_allowed_hosts, mut session_params, model_client_name) =
+                extract_model_params(&session_cfg, fallback_model_client_name.as_deref());
 
             println!(
                 "[session] config: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
@@ -205,11 +251,30 @@ impl Agent for AgentServer {
                 session_cfg.allowed_hosts,
             );
             println!(
-                "[session] model client: allowed_hosts={:?}",
+                "[session] model client: plugin={model_client_name}, allowed_hosts={:?}",
                 model_allowed_hosts,
             );
 
-            // --- Phase 2: instantiate model client with session credentials ---
+            // --- Phase 2: get (or compile) model client, then instantiate ---
+
+            let model_client_component = match get_or_compile_model_client(
+                &engine,
+                &config.model_client_dir,
+                &model_client_cache,
+                &model_client_name,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx
+                        .send(Err(Status::internal(format!(
+                            "Failed to load model client plugin '{model_client_name}': {e}"
+                        ))))
+                        .await;
+                    return;
+                }
+            };
 
             let mut model = match instantiate_model_client(
                 &engine,
@@ -302,15 +367,36 @@ impl Agent for AgentServer {
                         }
                     }
                     Some(user_input::Input::ConfigUpdate(cfg)) => {
-                        let (new_config_json, new_allowed_hosts, new_params) =
-                            extract_model_params(&cfg, &model_client_name);
+                        let (new_config_json, new_allowed_hosts, new_params, new_plugin_name) =
+                            extract_model_params(&cfg, fallback_model_client_name.as_deref());
                         session_params = new_params;
-                        println!("[session] config updated: {new_config_json}");
+                        println!("[session] config updated: plugin={new_plugin_name}");
+
+                        let new_component = match get_or_compile_model_client(
+                            &engine,
+                            &config.model_client_dir,
+                            &model_client_cache,
+                            &new_plugin_name,
+                        )
+                        .await
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Ok(AgentEvent {
+                                        event: Some(Event::AgentError(AgentError {
+                                            message: format!("Config update failed: {e}"),
+                                        })),
+                                    }))
+                                    .await;
+                                continue;
+                            }
+                        };
 
                         match instantiate_model_client(
                             &engine,
                             &model_client_linker,
-                            &model_client_component,
+                            &new_component,
                             &new_config_json,
                             &new_allowed_hosts,
                         )

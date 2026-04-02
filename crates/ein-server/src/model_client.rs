@@ -90,34 +90,42 @@ pub fn build_model_client_linker(
     Ok(linker)
 }
 
-/// Scans `model_client_dir` for the first `.wasm` file, compiles it into a
-/// [`Component`], and returns both the component and the plugin name derived
-/// from the filename stem (e.g. `ein_openrouter.wasm` → `"ein_openrouter"`).
-/// Called once at server startup.
-pub async fn load_model_client_component(
-    engine: &Engine,
-    model_client_dir: &Path,
-) -> anyhow::Result<(Component, String)> {
-    let mut entries = tokio::fs::read_dir(model_client_dir).await?;
+/// Scans `model_client_dir` for the first `.wasm` file and returns its filename
+/// stem (e.g. `ein_openrouter.wasm` → `"ein_openrouter"`). Does not compile.
+/// Used at startup to determine the fallback plugin name.
+pub async fn scan_model_client_name(model_client_dir: &Path) -> Option<String> {
+    let mut entries = tokio::fs::read_dir(model_client_dir).await.ok()?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("wasm") {
-            let name = path
+            return path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            println!("[model client] loading plugin from {}", path.display());
-            return Ok((Component::from_file(engine, path)?, name));
+                .map(str::to_owned);
         }
     }
+    None
+}
 
-    anyhow::bail!(
-        "No model client plugin found in {}.\n\n\
-         In debug builds, run `cargo build --target wasm32-wasip2 -p ein_openrouter` first.\n\
-         In release builds, run `./scripts/build_install_plugins.sh`.",
-        model_client_dir.display()
-    )
+/// Compiles a single model client plugin by name from `model_client_dir`.
+/// Returns the compiled [`Component`].
+pub async fn compile_model_client_component(
+    engine: &Engine,
+    model_client_dir: &Path,
+    name: &str,
+) -> anyhow::Result<Component> {
+    let path = model_client_dir.join(format!("{name}.wasm"));
+    if !path.exists() {
+        anyhow::bail!(
+            "Model client plugin '{name}' not found at {}.\n\n\
+             In debug builds, run `cargo build --target wasm32-wasip2 -p {name}` first.\n\
+             In release builds, run `./scripts/build_install_plugins.sh`.",
+            path.display()
+        );
+    }
+    println!("[model client] compiling plugin '{name}' from {}", path.display());
+    let engine = engine.clone();
+    Ok(tokio::task::spawn_blocking(move || Component::from_file(&engine, &path)).await??)
 }
 
 /// Instantiates a model client for a single session — called per session.
