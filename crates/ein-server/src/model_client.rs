@@ -252,6 +252,8 @@ impl WasmModelClient {
             .await?
             .map_err(|e| anyhow::anyhow!(e))?;
 
+        eprintln!("[model_client] raw response: {result}");
+
         Ok(serde_json::from_str(&result)?)
     }
 }

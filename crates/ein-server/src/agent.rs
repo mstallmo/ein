@@ -55,6 +55,42 @@ pub struct SessionParams {
 // Agent loop
 // ---------------------------------------------------------------------------
 
+/// Number of messages from the end of the history to always keep verbatim.
+/// This covers the current tool-call cycle plus the most recent user prompt.
+const KEEP_RECENT_MESSAGES: usize = 10;
+
+/// Tool result content longer than this (in bytes) will be replaced with a
+/// placeholder once it falls outside the `KEEP_RECENT_MESSAGES` window.
+/// 2000 bytes ≈ 500 tokens — generous for small bash outputs, compresses
+/// file reads and long command outputs.
+const MAX_TOOL_RESULT_CHARS: usize = 2000;
+
+/// Replaces the `content` of stale, large tool result messages with a compact
+/// placeholder so they no longer consume significant context budget.
+///
+/// A message is eligible if:
+/// - its `role` is `"tool"`
+/// - it is more than `KEEP_RECENT_MESSAGES` positions from the end of `messages`
+/// - its `content` length exceeds `MAX_TOOL_RESULT_CHARS`
+fn truncate_old_tool_results(messages: &mut Vec<Value>) {
+    let len = messages.len();
+    let truncate_before = len.saturating_sub(KEEP_RECENT_MESSAGES);
+
+    for msg in messages[..truncate_before].iter_mut() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("tool") {
+            continue;
+        }
+        let content_len = msg
+            .get("content")
+            .and_then(|c| c.as_str())
+            .map(|s| s.len())
+            .unwrap_or(0);
+        if content_len > MAX_TOOL_RESULT_CHARS {
+            msg["content"] = json!(format!("[Tool result truncated: {content_len} chars]"));
+        }
+    }
+}
+
 /// Runs the agent loop for one user turn.
 ///
 /// Sends `messages` to the LLM via the model client plugin, streams events
@@ -70,8 +106,14 @@ pub async fn run_agent(
 ) -> anyhow::Result<()> {
     let mut cumulative_prompt = 0i32;
     let mut cumulative_completion = 0i32;
+    // Count consecutive empty-stop turns so we can nudge the model when it
+    // produces thinking tokens but no output, and bail out if it keeps failing.
+    let mut empty_stop_retries = 0u32;
+    const MAX_EMPTY_STOP_RETRIES: u32 = 1;
 
     loop {
+        truncate_old_tool_results(messages);
+
         println!(
             "[agent] sending {} messages to {} (max_tokens={})",
             messages.len(),
@@ -120,6 +162,10 @@ pub async fn run_agent(
 
         // Extract and accumulate token usage from this response.
         if let Some(usage) = &resp.usage {
+            println!(
+                "[agent] tokens this call: prompt={}, completion={}",
+                usage.prompt_tokens, usage.completion_tokens,
+            );
             cumulative_prompt += usage.prompt_tokens;
             cumulative_completion += usage.completion_tokens;
 
@@ -151,9 +197,28 @@ pub async fn run_agent(
             .unwrap_or_default()
             .to_string();
 
-        println!("[agent] finish_reason={:?}", choice.finish_reason);
+        // Some models (e.g. gemma via Ollama) emit finish_reason="stop" even
+        // when they include tool calls in the response.  Normalise: if the
+        // message carries tool calls, treat it as ToolCalls regardless of the
+        // finish_reason field.
+        let has_tool_calls = choice
+            .message
+            .tool_calls
+            .as_ref()
+            .map(|tc| !tc.is_empty())
+            .unwrap_or(false);
+        let effective_finish = if has_tool_calls {
+            FinishReason::ToolCalls
+        } else {
+            choice.finish_reason.clone()
+        };
 
-        match choice.finish_reason {
+        println!(
+            "[agent] finish_reason={:?} (effective={:?})",
+            choice.finish_reason, effective_finish
+        );
+
+        match effective_finish {
             FinishReason::ToolCalls => {
                 // Stream any accompanying text before executing tools.
                 if !content.is_empty() {
@@ -207,16 +272,46 @@ pub async fn run_agent(
                         }
                     }
                 }
+                empty_stop_retries = 0;
                 // Loop: send the updated history back to the LLM.
             }
             FinishReason::Stop => {
-                let _ = tx
-                    .send(Ok(AgentEvent {
-                        event: Some(Event::AgentFinished(AgentFinished {
-                            final_content: content,
-                        })),
-                    }))
-                    .await;
+                if content.is_empty() {
+                    if empty_stop_retries < MAX_EMPTY_STOP_RETRIES {
+                        empty_stop_retries += 1;
+                        eprintln!(
+                            "[agent] empty stop (thinking-only response), nudging model \
+                             to continue (attempt {}/{})",
+                            empty_stop_retries, MAX_EMPTY_STOP_RETRIES,
+                        );
+                        // The empty assistant turn is already in `messages`; add
+                        // a user prompt to coax the model into producing output.
+                        messages.push(json!({
+                            "role": "user",
+                            "content": "Your last response was empty. Emit a tool call now to make progress.",
+                        }));
+                        continue;
+                    }
+                    eprintln!(
+                        "[agent] model returned stop with empty content after {empty_stop_retries} retries"
+                    );
+                    let _ = tx
+                        .send(Ok(AgentEvent {
+                            event: Some(Event::AgentFinished(AgentFinished {
+                                final_content: "(The model finished without producing a response.)"
+                                    .to_string(),
+                            })),
+                        }))
+                        .await;
+                } else {
+                    let _ = tx
+                        .send(Ok(AgentEvent {
+                            event: Some(Event::AgentFinished(AgentFinished {
+                                final_content: content,
+                            })),
+                        }))
+                        .await;
+                }
                 break;
             }
             FinishReason::Unsupported => {

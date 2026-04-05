@@ -26,24 +26,36 @@ impl ToolPlugin for WriteTool {
     }
 
     fn schema(&self) -> ToolDef {
-        ToolDef::function(self.name(), "Write content to a file")
-            .param(
-                "file_path",
-                "string",
-                "The path of the file to write to",
-                true,
-            )
-            .param(
-                "content",
-                "string",
-                "The content to write to the file",
-                true,
-            )
-            .build()
+        ToolDef::function(
+            self.name(),
+            "Write content to a file, creating it and any missing parent directories. \
+             Pass the complete intended file contents as `content` — do not truncate or \
+             summarise. Call this tool directly; there is no need to create directories \
+             beforehand.",
+        )
+        .param(
+            "file_path",
+            "string",
+            "The path of the file to write to",
+            true,
+        )
+        .param(
+            "content",
+            "string",
+            "The complete content to write to the file",
+            true,
+        )
+        .build()
     }
 
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: WriteArgs = serde_json::from_str(args)?;
+
+        if let Some(parent) = std::path::Path::new(&args.file_path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
 
         let mut file = fs::OpenOptions::new()
             .create(true)

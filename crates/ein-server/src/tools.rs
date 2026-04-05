@@ -37,10 +37,22 @@ impl WasmTool {
         let mut builder = WasiCtx::builder();
         let mut wasi_builder = builder.inherit_stdio().inherit_args();
 
+        // Mount each allowed path at its absolute guest path so plugins can
+        // open files by absolute path.  Additionally mount the first path as
+        // "." so that relative paths (e.g. "crates/ein-server/Cargo.toml")
+        // resolve correctly — WASI resolves relative paths against the guest
+        // current directory, which must be explicitly preopened.
+        let mut first = true;
         for host_path in allowed_paths {
             wasi_builder = wasi_builder
                 .preopened_dir(host_path, host_path, DirPerms::all(), FilePerms::all())
                 .expect("failed to preopen dir");
+            if first {
+                wasi_builder = wasi_builder
+                    .preopened_dir(host_path, ".", DirPerms::all(), FilePerms::all())
+                    .expect("failed to preopen dir as current directory");
+                first = false;
+            }
         }
 
         if allowed_hosts.iter().any(|h| h == "*") {

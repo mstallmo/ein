@@ -40,6 +40,11 @@ struct OllamaConfig {
     api_key: Option<String>,
     #[serde(default = "default_base_url")]
     base_url: String,
+    /// Context window size passed to Ollama as `options.num_ctx`.
+    /// Ollama's default is 2048 tokens, which is too small for multi-step
+    /// agent sessions. Set this to 16384 or higher for code review workloads.
+    #[serde(default)]
+    num_ctx: Option<u32>,
 }
 
 fn default_base_url() -> String {
@@ -69,11 +74,19 @@ impl ModelClientPlugin for OllamaPlugin {
 
         // CompletionRequest field names already match the OpenAI wire format,
         // which Ollama's /v1/chat/completions endpoint also accepts.
+        // Inject Ollama-specific options (e.g. num_ctx) alongside the standard
+        // fields if configured.
+        let mut body = serde_json::to_value(&req)?;
+        if let Some(num_ctx) = self.config.num_ctx {
+            eprintln!("[ollama] setting num_ctx={num_ctx}");
+            body["options"] = serde_json::json!({ "num_ctx": num_ctx });
+        }
+
         let mut req_builder = HttpRequest::post(url);
         if let Some(key) = &self.config.api_key {
             req_builder = req_builder.bearer_auth(key);
         }
-        let resp = req_builder.json(&req)?.send().map_err(|e| {
+        let resp = req_builder.json(&body)?.send().map_err(|e| {
             if e.is::<RequestDeniedError>() {
                 anyhow!(
                     "Request to {} was blocked by the host allowlist.\n\

@@ -31,6 +31,23 @@ use syntect::{
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::transport::Channel;
+use tracing::{debug, info, warn};
+
+// ---------------------------------------------------------------------------
+// CLI arguments
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Parser)]
+#[command(about = "Ein terminal UI")]
+struct Args {
+    /// gRPC server address
+    #[arg(default_value = "http://localhost:50051")]
+    server_addr: String,
+
+    /// Write debug logs to ~/.ein/tui.log
+    #[arg(long)]
+    debug: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Color palette
@@ -396,35 +413,14 @@ fn render(app: &App, frame: &mut Frame) {
     }
 
     // Ratatui's Paragraph::scroll((y, 0)) counts *rendered* rows (after
-    // word-wrapping), not logical Line objects.  When tool output or agent
-    // text contains lines wider than the pane, each logical Line wraps into
-    // multiple rendered rows.  Using lines.len() as the scroll target would
-    // leave the spinner (the last rendered row) below the visible viewport.
-    // Compute the rendered-row total by summing each line's wrapped height.
-    //
-    // The base estimate ceil(chars / width) can undercount by one when a long
-    // word (URL, identifier, etc.) is moved to a new row by word-wrap but
-    // still overflows that row, requiring an extra hard-break.  Adding one row
-    // per word that is itself wider than the pane corrects this.
-    let conv_width = layout[0].width as usize;
-    let total_rows: u16 = lines
-        .iter()
-        .map(|line: &Line| {
-            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            if conv_width == 0 || text.is_empty() {
-                return 1u32;
-            }
-            let base = ((text.chars().count() + conv_width - 1) / conv_width) as u32;
-            let extra = text
-                .split_whitespace()
-                .filter(|w| w.chars().count() > conv_width)
-                .count() as u32;
-            base + extra
-        })
-        .sum::<u32>()
-        .min(u16::MAX as u32) as u16;
-
+    // word-wrapping), not logical Line objects.  Use Paragraph::line_count so
+    // that the row total matches exactly what ratatui will render — this
+    // handles word-wrap, wide words, and unicode correctly without a fragile
+    // manual approximation.
+    let conv_width = layout[0].width;
     let viewport_height = layout[0].height;
+    let conv = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total_rows = conv.line_count(conv_width) as u16;
 
     // scroll_offset counts rows scrolled *up* from the bottom, so the
     // ratatui scroll value (rows from the top) is the inverse.
@@ -436,10 +432,14 @@ fn render(app: &App, frame: &mut Frame) {
             .saturating_sub(app.scroll_offset)
     };
 
-    let conv = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(conv, layout[0]);
+    debug!(
+        total_rows,
+        viewport_height,
+        scroll,
+        auto_scroll = app.auto_scroll,
+        "scroll"
+    );
+    frame.render_widget(conv.scroll((scroll, 0)), layout[0]);
 
     // --- Input area ---
     // Text is pre-wrapped into fixed-width chunks so cursor positioning and
@@ -836,6 +836,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             app.auto_scroll = true;
         }
         Some(ServerEvent::ToolCallStart(t)) => {
+            debug!(tool = %t.tool_name, "tool call start");
             let (name, arg) = parse_tool_call(&t.tool_name, &t.arguments);
 
             app.messages.push(DisplayMessage::ToolCall {
@@ -846,6 +847,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             app.auto_scroll = true;
         }
         Some(ServerEvent::ToolCallEnd(t)) => {
+            debug!(tool = %t.tool_name, "tool call end");
             // For Edit calls the tool returns diff metadata; replace the
             // ToolCall placeholder that was pushed at ToolCallStart.
             if t.tool_name == "Edit" && !t.metadata.is_empty() {
@@ -888,6 +890,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             }
         }
         Some(ServerEvent::AgentFinished(f)) => {
+            debug!("agent finished");
             if !f.final_content.is_empty() {
                 app.messages
                     .push(DisplayMessage::AgentText(f.final_content));
@@ -896,16 +899,26 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             app.auto_scroll = true;
         }
         Some(ServerEvent::AgentError(e)) => {
+            warn!(message = %e.message, "agent error");
             app.messages.push(DisplayMessage::Error(e.message));
             app.agent_busy = false;
             app.auto_scroll = true;
         }
         Some(ServerEvent::TokenUsage(u)) => {
+            debug!(total = u.total_tokens, "token usage");
             app.cumulative_tokens = u.total_tokens;
         }
         Some(ServerEvent::ToolOutputChunk(c)) => {
+            debug!(
+                chunk_len = c.output.len(),
+                lines = c.output.split('\n').count(),
+                "tool output chunk",
+            );
             if let Some(DisplayMessage::ToolCall { output_lines, .. }) = app.messages.last_mut() {
-                output_lines.push(c.output);
+                // Split on newlines so each entry is a single display line.
+                // This keeps the row-count calculation correct (it doesn't
+                // account for embedded '\n' within a ratatui Line).
+                output_lines.extend(c.output.split('\n').map(str::to_owned));
                 app.auto_scroll = true;
             }
         }
@@ -1091,18 +1104,14 @@ async fn connection_manager(
 // Entry point
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Optional server address as first CLI argument; defaults to localhost.
-    let server_addr = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "http://localhost:50051".to_string());
+// BUGFIX: Select the configured model from the configured `model_client` not just
+// the first one that we happen to get in the map
 
-    // Load (or create) the client config before opening the gRPC session.
-    let mut cfg = load_or_create_config()?;
-
-    // Derive a short model name for the status bar by stripping the vendor
-    // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
+/// Derives a short model name for the status bar from the client config.
+///
+/// Strips the vendor prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
+/// Falls back to a placeholder when no model is configured.
+fn model_display_from_config(cfg: &config::ClientConfig) -> String {
     let model_full = cfg
         .plugin_configs
         .values()
@@ -1112,11 +1121,43 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|v| v.as_str())
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| "anthropic/claude-haiku-4.5".to_string());
-    let model_display = model_full
+        .unwrap_or_else(|| "unknown".to_string());
+    model_full
         .split_once('/')
         .map(|(_, m)| m.to_string())
-        .unwrap_or(model_full);
+        .unwrap_or(model_full)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    use clap::Parser;
+    let args = Args::parse();
+
+    // Initialize the file-based tracing subscriber when --debug is passed.
+    // Must happen before enable_raw_mode() takes over the terminal.
+    // The guard is held for the lifetime of main() to flush the non-blocking writer.
+    let _tracing_guard = if args.debug {
+        let log_dir = dirs::home_dir().unwrap_or_default().join(".ein");
+        let file_appender = tracing_appender::rolling::never(&log_dir, "tui.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .with_target(false)
+            .init();
+        Some(guard)
+    } else {
+        None
+    };
+
+    info!(server_addr = %args.server_addr, "ein-tui starting");
+
+    // Load (or create) the client config before opening the gRPC session.
+    let mut cfg = load_or_create_config()?;
+
+    // Derive a short model name for the status bar by stripping the vendor
+    // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
+    let model_display = model_display_from_config(&cfg);
 
     // Collect the cwd for the startup modal (shown before connecting) and
     // for the welcome header in the conversation pane.
@@ -1134,7 +1175,7 @@ async fn main() -> anyhow::Result<()> {
     // Otherwise it is spawned when the modal is dismissed.
     if cwd_str.is_none() {
         tokio::spawn(connection_manager(
-            server_addr.clone(),
+            args.server_addr.clone(),
             cfg.clone(),
             event_tx.clone(),
         ));
@@ -1181,7 +1222,7 @@ async fn main() -> anyhow::Result<()> {
                             let cwd = app.pending_cwd_prompt.take().unwrap();
                             cfg.allowed_paths.push(cwd);
                             tokio::spawn(connection_manager(
-                                server_addr.clone(),
+                                args.server_addr.clone(),
                                 cfg.clone(),
                                 event_tx.clone(),
                             ));
@@ -1189,7 +1230,7 @@ async fn main() -> anyhow::Result<()> {
                         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
                             app.pending_cwd_prompt = None;
                             tokio::spawn(connection_manager(
-                                server_addr.clone(),
+                                args.server_addr.clone(),
                                 cfg.clone(),
                                 event_tx.clone(),
                             ));
@@ -1308,12 +1349,14 @@ async fn main() -> anyhow::Result<()> {
                 match app_event {
                     AppEvent::Server(event) => handle_server_event(&mut app, event),
                     AppEvent::Connected(sender) => {
+                        info!("connected to server");
                         app.prompt_tx = Some(sender);
                         app.connection_status = ConnectionStatus::Connected;
                         app.cumulative_tokens = 0;
                         app.connection_error = None;
                     }
                     AppEvent::Disconnected(msg) => {
+                        info!(error = ?msg, "disconnected from server");
                         app.connection_error = msg;
                         app.prompt_tx = None;
                         app.connection_status = ConnectionStatus::Connecting;
@@ -1322,6 +1365,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                     AppEvent::ConfigChanged(new_cfg) => {
                         cfg = new_cfg.clone();
+                        app.model_display = model_display_from_config(&new_cfg);
+                        info!(model = %app.model_display, "config reloaded");
                         if let Some(tx) = &app.prompt_tx {
                             let _ = tx
                                 .send(UserInput {
@@ -1343,4 +1388,338 @@ async fn main() -> anyhow::Result<()> {
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ein_proto::ein::{
+        AgentEvent, AgentFinished, ContentDelta, TokenUsage, ToolOutputChunk,
+        agent_event::Event as ProtoEvent,
+    };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    /// Build an `App` suitable for render tests: no CWD modal, no prompt sender.
+    fn make_app(model: &str) -> App {
+        App::new(model.to_string(), None, "/test".to_string())
+    }
+
+    /// Wrap a proto event variant into an `AgentEvent`.
+    fn agent_event(ev: ProtoEvent) -> AgentEvent {
+        AgentEvent { event: Some(ev) }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Unit tests — pure functions, no I/O
+    // ---------------------------------------------------------------------------
+
+    mod unit {
+        use super::*;
+        use crate::config::{ClientConfig, PluginConfig};
+        use std::collections::HashMap;
+
+        fn config_with_model(model: &str) -> ClientConfig {
+            let mut params = HashMap::new();
+            params.insert("model".to_string(), serde_json::json!(model));
+            let mut plugin_configs = HashMap::new();
+            plugin_configs.insert(
+                "ein_openrouter".to_string(),
+                PluginConfig {
+                    allowed_paths: vec![],
+                    allowed_hosts: vec![],
+                    params,
+                },
+            );
+            ClientConfig {
+                plugin_configs,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn model_display_strips_vendor_prefix() {
+            let cfg = config_with_model("anthropic/claude-sonnet-4-5");
+            assert_eq!(model_display_from_config(&cfg), "claude-sonnet-4-5");
+        }
+
+        #[test]
+        fn model_display_no_model_returns_unknown() {
+            let cfg = ClientConfig::default();
+            assert_eq!(model_display_from_config(&cfg), "unknown");
+        }
+
+        #[test]
+        fn model_display_no_prefix_passthrough() {
+            let cfg = config_with_model("llama3");
+            assert_eq!(model_display_from_config(&cfg), "llama3");
+        }
+
+        #[test]
+        fn build_lines_tool_call_caps_at_8_output_lines() {
+            let output_lines: Vec<String> = (0..20).map(|i| format!("line{i}")).collect();
+            let msgs = vec![DisplayMessage::ToolCall {
+                name: "Bash".to_string(),
+                arg: Some("echo hi".to_string()),
+                output_lines,
+            }];
+            let lines = build_lines(&msgs);
+            // 1 header + 8 output rows + 1 trailing blank = 10
+            assert_eq!(lines.len(), 10);
+        }
+
+        #[test]
+        fn build_lines_tool_call_shows_last_lines() {
+            let output_lines: Vec<String> = (0..20).map(|i| format!("sentinel_{i}")).collect();
+            let msgs = vec![DisplayMessage::ToolCall {
+                name: "Bash".to_string(),
+                arg: None,
+                output_lines,
+            }];
+            let lines = build_lines(&msgs);
+            let text: String = lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+                .collect();
+            assert!(
+                text.contains("sentinel_19"),
+                "last output line should be rendered"
+            );
+            assert!(
+                !text.contains("sentinel_0"),
+                "first output line should be scrolled off"
+            );
+        }
+
+        #[test]
+        fn build_lines_empty_output_lines() {
+            let msgs = vec![DisplayMessage::ToolCall {
+                name: "Read".to_string(),
+                arg: Some("/etc/hosts".to_string()),
+                output_lines: vec![],
+            }];
+            let lines = build_lines(&msgs);
+            // 1 header + 0 output rows + 1 trailing blank = 2
+            assert_eq!(lines.len(), 2);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // State mutation tests — handle_server_event
+    // ---------------------------------------------------------------------------
+
+    mod state {
+        use super::*;
+
+        /// Push a ToolCall placeholder so ToolOutputChunk has somewhere to land.
+        fn push_tool_call(app: &mut App) {
+            app.messages.push(DisplayMessage::ToolCall {
+                name: "Bash".to_string(),
+                arg: None,
+                output_lines: vec![],
+            });
+        }
+
+        fn output_lines(app: &App) -> &Vec<String> {
+            match app.messages.last().unwrap() {
+                DisplayMessage::ToolCall { output_lines, .. } => output_lines,
+                _ => panic!("expected ToolCall"),
+            }
+        }
+
+        #[test]
+        fn tool_output_chunk_splits_on_newlines() {
+            let mut app = make_app("m");
+            push_tool_call(&mut app);
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::ToolOutputChunk(ToolOutputChunk {
+                    tool_call_id: String::new(),
+                    output: "a\nb\nc\n".to_string(),
+                })),
+            );
+            let lines = output_lines(&app);
+            assert_eq!(lines.len(), 4, "split on \\n produces 4 entries");
+            assert!(
+                lines.iter().all(|l| !l.contains('\n')),
+                "no entry should contain \\n"
+            );
+        }
+
+        #[test]
+        fn tool_output_chunk_single_line() {
+            let mut app = make_app("m");
+            push_tool_call(&mut app);
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::ToolOutputChunk(ToolOutputChunk {
+                    tool_call_id: String::new(),
+                    output: "hello".to_string(),
+                })),
+            );
+            assert_eq!(output_lines(&app).len(), 1);
+            assert_eq!(output_lines(&app)[0], "hello");
+        }
+
+        #[test]
+        fn agent_finished_clears_busy() {
+            let mut app = make_app("m");
+            app.agent_busy = true;
+            app.auto_scroll = false;
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::AgentFinished(AgentFinished {
+                    final_content: String::new(),
+                })),
+            );
+            assert!(!app.agent_busy);
+            assert!(app.auto_scroll);
+        }
+
+        #[test]
+        fn content_delta_coalesces() {
+            let mut app = make_app("m");
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::ContentDelta(ContentDelta {
+                    text: "hello ".to_string(),
+                })),
+            );
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::ContentDelta(ContentDelta {
+                    text: "world".to_string(),
+                })),
+            );
+            let agent_texts: Vec<_> = app
+                .messages
+                .iter()
+                .filter_map(|m| {
+                    if let DisplayMessage::AgentText(t) = m {
+                        Some(t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                agent_texts.len(),
+                1,
+                "two ContentDeltas should coalesce into one AgentText"
+            );
+            assert_eq!(agent_texts[0], "hello world");
+        }
+
+        #[test]
+        fn token_usage_updates_cumulative() {
+            let mut app = make_app("m");
+            handle_server_event(
+                &mut app,
+                agent_event(ProtoEvent::TokenUsage(TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 32,
+                    total_tokens: 42,
+                })),
+            );
+            assert_eq!(app.cumulative_tokens, 42);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Render tests — TestBackend verifies what actually appears on screen
+    // ---------------------------------------------------------------------------
+
+    mod render {
+        use super::*;
+
+        fn draw(app: &App, width: u16, height: u16) -> String {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| super::super::render(app, f)).unwrap();
+            terminal
+                .backend_mut()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        }
+
+        /// Build an app with a completed Bash tool call (100 lines of output).
+        fn app_with_long_tool_call() -> App {
+            let mut app = make_app("test-model");
+            app.messages.push(DisplayMessage::ToolCall {
+                name: "Bash".to_string(),
+                arg: Some("some-command".to_string()),
+                output_lines: (0..100).map(|i| format!("output line {i}")).collect(),
+            });
+            app
+        }
+
+        #[test]
+        fn thinking_spinner_visible_during_tool_output() {
+            // Regression: spinner was scrolled off-screen when bash produced many lines.
+            let mut app = app_with_long_tool_call();
+            app.agent_busy = true;
+            app.auto_scroll = true;
+
+            let text = draw(&app, 100, 30);
+            assert!(
+                text.contains("thinking"),
+                "thinking spinner should be visible in the viewport"
+            );
+        }
+
+        #[test]
+        fn agent_response_visible_after_long_tool_call() {
+            // Regression: agent response after a long bash output was cut off.
+            let mut app = app_with_long_tool_call();
+            app.messages.push(DisplayMessage::AgentText(
+                "SENTINEL_RESPONSE_TEXT".to_string(),
+            ));
+            app.agent_busy = false;
+            app.auto_scroll = true;
+
+            let text = draw(&app, 100, 30);
+            assert!(
+                text.contains("SENTINEL_RESPONSE_TEXT"),
+                "agent response should be visible after tool call"
+            );
+        }
+
+        #[test]
+        fn status_bar_shows_model_name_and_tokens() {
+            let mut app = make_app("my-test-model");
+            app.connection_status = ConnectionStatus::Connected;
+            app.cumulative_tokens = 99;
+
+            let text = draw(&app, 80, 10);
+            assert!(
+                text.contains("my-test-model"),
+                "status bar should show model name"
+            );
+            assert!(text.contains("99"), "status bar should show token count");
+        }
+
+        #[test]
+        fn connecting_animation_shown_when_disconnected() {
+            let mut app = make_app("m");
+            app.connection_status = ConnectionStatus::Connecting;
+            app.agent_busy = false;
+
+            let text = draw(&app, 80, 10);
+            assert!(
+                text.contains("connecting to server"),
+                "connecting animation should be shown"
+            );
+        }
+    }
 }

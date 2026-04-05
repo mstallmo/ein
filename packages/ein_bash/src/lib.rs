@@ -44,7 +44,13 @@ impl ToolPlugin for BashTool {
         let result =
             ein_plugin::tool::syscalls::spawn(&args.command).map_err(|err| anyhow!(err))?;
 
-        Ok(ToolResult::new(id, result))
+        let content = if result.is_empty() {
+            "(no output)".to_string()
+        } else {
+            result
+        };
+
+        Ok(ToolResult::new(id, content))
     }
 }
 
