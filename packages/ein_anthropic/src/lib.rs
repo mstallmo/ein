@@ -163,6 +163,8 @@ fn translate_tools(oai_tools: &[Value]) -> Vec<Value> {
 
 /// Convert a slice of non-system messages to Anthropic messages.
 ///
+/// Expects system messages to have already been filtered out by the caller.
+///
 /// The main challenges:
 /// - `Role::Tool` messages (tool results) must be batched into a single
 ///   `role:"user"` message with an array of `tool_result` content blocks.

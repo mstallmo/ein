@@ -97,7 +97,7 @@ pub struct Choice {
     pub message: Message,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
@@ -132,6 +132,9 @@ pub enum Role {
 pub enum ToolCall {
     Function {
         id: String,
+        /// Position index from streaming response deltas. Not part of the
+        /// OpenAI request schema; omitted when serialising back to the API.
+        #[serde(skip_serializing)]
         index: usize,
         function: FunctionCall,
     },

@@ -209,7 +209,7 @@ pub async fn run_agent(
         let effective_finish = if has_tool_calls {
             FinishReason::ToolCalls
         } else {
-            choice.finish_reason.clone()
+            choice.finish_reason
         };
 
         println!(
