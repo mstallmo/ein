@@ -103,21 +103,21 @@ impl ModelClientPlugin for AnthropicPlugin {
     }
 }
 
-/// Convert an OpenAI-format `CompletionRequest` into an Anthropic Messages API request body.
+/// Convert an internal `CompletionRequest` into an Anthropic Messages API request body.
 fn translate_request(req: &CompletionRequest) -> anyhow::Result<Value> {
     // Extract system messages and join them into the top-level "system" field.
     let system_text: String = req
         .messages
         .iter()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
-        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+        .filter(|m| matches!(m.role, Role::System))
+        .filter_map(|m| m.content.as_deref())
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let non_system: Vec<&Value> = req
+    let non_system: Vec<&Message> = req
         .messages
         .iter()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) != Some("system"))
+        .filter(|m| !matches!(m.role, Role::System))
         .collect();
 
     let anthropic_messages = translate_messages(&non_system);
@@ -161,103 +161,85 @@ fn translate_tools(oai_tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Convert a slice of non-system OpenAI messages to Anthropic messages.
+/// Convert a slice of non-system messages to Anthropic messages.
 ///
 /// The main challenges:
-/// - `role:"tool"` messages (tool results) must be batched into a single
+/// - `Role::Tool` messages (tool results) must be batched into a single
 ///   `role:"user"` message with an array of `tool_result` content blocks.
-/// - `role:"assistant"` messages with `tool_calls` must emit `tool_use` content blocks.
+/// - `Role::Assistant` messages with `tool_calls` must emit `tool_use` content blocks.
 /// - `arguments` (raw JSON string in OpenAI) becomes `input` (parsed object in Anthropic).
-fn translate_messages(messages: &[&Value]) -> Vec<Value> {
+fn translate_messages(messages: &[&Message]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
 
     for msg in messages {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-
-        if role == "tool" {
-            let tool_use_id = msg
-                .get("tool_call_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let content = msg
-                .get("content")
-                .and_then(|c| c.as_str())
-                .unwrap_or("")
-                .to_string();
-            pending_tool_results.push(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-                "content": content,
-            }));
-        } else {
-            // Flush any accumulated tool results before a non-tool message.
-            if !pending_tool_results.is_empty() {
-                out.push(json!({
-                    "role": "user",
-                    "content": pending_tool_results.drain(..).collect::<Vec<_>>(),
+        match msg.role {
+            Role::Tool => {
+                let tool_use_id = msg.tool_call_id.as_deref().unwrap_or("").to_string();
+                let content = msg.content.as_deref().unwrap_or("").to_string();
+                pending_tool_results.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
                 }));
             }
-
-            match role {
-                "user" => {
+            _ => {
+                // Flush any accumulated tool results before a non-tool message.
+                if !pending_tool_results.is_empty() {
                     out.push(json!({
                         "role": "user",
-                        "content": msg.get("content").cloned().unwrap_or(Value::String(String::new())),
+                        "content": pending_tool_results.drain(..).collect::<Vec<_>>(),
                     }));
                 }
-                "assistant" => {
-                    let mut content_blocks: Vec<Value> = Vec::new();
 
-                    // Optional text content.
-                    if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
-                        if !text.is_empty() {
-                            content_blocks.push(json!({ "type": "text", "text": text }));
+                match msg.role {
+                    Role::User => {
+                        out.push(json!({
+                            "role": "user",
+                            "content": msg.content.as_deref().unwrap_or(""),
+                        }));
+                    }
+                    Role::Assistant => {
+                        let mut content_blocks: Vec<Value> = Vec::new();
+
+                        // Optional text content.
+                        if let Some(text) = &msg.content {
+                            if !text.is_empty() {
+                                content_blocks.push(json!({ "type": "text", "text": text }));
+                            }
                         }
-                    }
 
-                    // Tool calls → tool_use blocks.
-                    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                        for tc in tool_calls {
-                            let id = tc
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let name = tc
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            // arguments is a raw JSON string; Anthropic wants a parsed object.
-                            let input: Value = tc
-                                .get("function")
-                                .and_then(|f| f.get("arguments"))
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| serde_json::from_str(s).ok())
-                                .unwrap_or(Value::Object(Default::default()));
-                            content_blocks.push(json!({
-                                "type": "tool_use",
-                                "id": id,
-                                "name": name,
-                                "input": input,
-                            }));
+                        // Tool calls → tool_use blocks.
+                        if let Some(tool_calls) = &msg.tool_calls {
+                            for tc in tool_calls {
+                                match tc {
+                                    ToolCall::Function { id, function, .. } => {
+                                        // arguments is a raw JSON string; Anthropic wants a parsed object.
+                                        let input: Value = serde_json::from_str(&function.arguments)
+                                            .unwrap_or(Value::Object(Default::default()));
+                                        content_blocks.push(json!({
+                                            "type": "tool_use",
+                                            "id": id,
+                                            "name": function.name,
+                                            "input": input,
+                                        }));
+                                    }
+                                }
+                            }
                         }
-                    }
 
-                    // Anthropic requires a non-empty content array for assistant turns.
-                    if content_blocks.is_empty() {
-                        content_blocks.push(json!({ "type": "text", "text": "" }));
-                    }
+                        // Anthropic requires a non-empty content array for assistant turns.
+                        if content_blocks.is_empty() {
+                            content_blocks.push(json!({ "type": "text", "text": "" }));
+                        }
 
-                    out.push(json!({
-                        "role": "assistant",
-                        "content": content_blocks,
-                    }));
+                        out.push(json!({
+                            "role": "assistant",
+                            "content": content_blocks,
+                        }));
+                    }
+                    _ => {} // System and Tool already handled above.
                 }
-                _ => {} // Unknown roles are skipped.
             }
         }
     }
