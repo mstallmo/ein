@@ -60,7 +60,6 @@ pub trait ModelClientPlugin: Send + Sync {
 // ---------------------------------------------------------------------------
 // Shared request / response types
 //
-// These mirror the OpenAI chat completion wire format used by OpenRouter.
 // Serde attributes must preserve the exact field names and shapes the API
 // expects so that serialised messages can be sent back to the LLM unchanged.
 // ---------------------------------------------------------------------------
@@ -70,10 +69,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
-    /// Full conversation history in OpenAI message format. Kept as raw
-    /// `Value`s so the server's `Vec<Value>` history can be passed through
-    /// without an extra conversion layer.
-    pub messages: Vec<serde_json::Value>,
+    /// Full conversation history. Typed as `Vec<Message>` so the contract is
+    /// explicit and compiler-enforced; serialises to OpenAI chat-completion
+    /// format, which OpenAI-compatible plugins can send verbatim.
+    pub messages: Vec<Message>,
     pub tools: Vec<serde_json::Value>,
     pub max_tokens: i32,
 }
