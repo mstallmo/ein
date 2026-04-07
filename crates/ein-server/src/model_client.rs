@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{CompletionRequest, CompletionResponse};
+use ein_plugin::model_client::{CompletionRequest, CompletionResponse, Message};
 use serde_json::Value;
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
@@ -177,7 +177,7 @@ impl ModelClientSession {
 
     pub async fn complete(
         &mut self,
-        messages: &[Value],
+        messages: &[Message],
         tools: &[Value],
     ) -> anyhow::Result<CompletionResponse> {
         let req = CompletionRequest {

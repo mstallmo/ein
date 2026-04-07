@@ -21,7 +21,7 @@
 use std::mem;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use ein_plugin::model_client::{Message, Role};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -159,7 +159,7 @@ impl Agent for AgentServer {
             // --- Phase 4: prompt loop ---
             // `messages` accumulates the full conversation history for this
             // session in OpenAI chat-completion format.
-            let mut messages: Vec<Value> = vec![];
+            let mut messages: Vec<Message> = vec![];
 
             // Prepend a system message so the model knows which filesystem
             // paths the file tools (Read, Write, Edit) are allowed to access.
@@ -170,19 +170,26 @@ impl Agent for AgentServer {
                     .map(|p| format!("- {p}"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                messages.push(json!({
-                    "role": "system",
-                    "content": format!(
+                messages.push(Message {
+                    role: Role::System,
+                    content: Some(format!(
                         "The following filesystem paths are accessible to file tools (Read, Write, Edit):\n{paths_list}"
-                    ),
-                }));
+                    )),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
             }
 
             while let Ok(Some(msg)) = inbound.message().await {
                 match msg.input {
                     Some(user_input::Input::Prompt(prompt)) => {
                         println!("[session] prompt received ({} chars)", prompt.len());
-                        messages.push(json!({ "role": "user", "content": prompt }));
+                        messages.push(Message {
+                            role: Role::User,
+                            content: Some(prompt),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
 
                         if let Err(e) =
                             run_agent(&mut messages, &mut registry, &mut model_session, &tx).await
