@@ -29,6 +29,7 @@ mod bindings;
 mod grpc;
 mod model_client;
 mod model_client_bindings;
+mod persistence;
 mod syscalls;
 mod tools;
 
