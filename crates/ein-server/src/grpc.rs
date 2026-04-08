@@ -63,9 +63,8 @@ impl AgentServer {
         let model_client_session_manager =
             ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
         let tool_linker = Arc::new(build_tool_linker(&engine)?);
-        let session_store = Arc::new(
-            crate::persistence::SessionStore::open(&config.db_path).await?,
-        );
+        let session_store =
+            Arc::new(crate::persistence::SessionStore::open(&config.db_path).await?);
 
         Ok(Self {
             config,

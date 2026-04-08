@@ -159,7 +159,9 @@ mod tests {
     use ein_plugin::model_client::Role;
 
     async fn make_store() -> SessionStore {
-        SessionStore::open_in_memory().await.expect("in-memory store")
+        SessionStore::open_in_memory()
+            .await
+            .expect("in-memory store")
     }
 
     fn simple_message(role: Role, text: &str) -> Message {

@@ -1106,7 +1106,6 @@ async fn connection_manager(
 // Entry point
 // ---------------------------------------------------------------------------
 
-
 /// Derives a short model name for the status bar from the client config.
 ///
 /// Strips the vendor prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
