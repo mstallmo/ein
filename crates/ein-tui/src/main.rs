@@ -922,6 +922,7 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
                 app.auto_scroll = true;
             }
         }
+        Some(ServerEvent::SessionStarted(_)) => {}
         None => {}
     }
 }
@@ -1015,6 +1016,7 @@ fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
             })
             .collect(),
         model_client_name: cfg.model_client_name.clone(),
+        session_id: String::new(),
     }
 }
 
