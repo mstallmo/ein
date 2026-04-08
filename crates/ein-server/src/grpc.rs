@@ -46,6 +46,7 @@ pub struct AgentServer {
     engine: Engine,
     model_client_session_manager: ModelClientSessionManager,
     tool_linker: Arc<Linker<HarnessState>>,
+    session_store: Arc<crate::persistence::SessionStore>,
 }
 
 impl AgentServer {
@@ -62,12 +63,16 @@ impl AgentServer {
         let model_client_session_manager =
             ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
         let tool_linker = Arc::new(build_tool_linker(&engine)?);
+        let session_store = Arc::new(
+            crate::persistence::SessionStore::open(&config.db_path).await?,
+        );
 
         Ok(Self {
             config,
             engine,
             model_client_session_manager,
             tool_linker,
+            session_store,
         })
     }
 }
