@@ -18,10 +18,12 @@ ein-proto          = { path = "../ein-proto" }
 ein_plugin         = { path = "../../packages/ein_plugin" }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
+sqlx               = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tokio              = { workspace = true }
 tokio-stream       = "0.1"
 tonic              = { workspace = true }
 hyper              = { version = "1", default-features = false }
+uuid               = { version = "1", features = ["v7"] }
 wasmtime           = "42.0.1"
 wasmtime-wasi      = "42.0.1"
 wasmtime-wasi-http = "42.0.1"
