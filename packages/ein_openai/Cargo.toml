@@ -1,0 +1,16 @@
+[package]
+name = "ein_openai"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow           = { workspace = true }
+ein_plugin = { path = "../ein_plugin" }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+wit-bindgen      = { workspace = true }

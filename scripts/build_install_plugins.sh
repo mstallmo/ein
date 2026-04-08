@@ -37,6 +37,10 @@ echo "Building anthropic model client plugin..."
 cargo build --release -p ein_anthropic --target wasm32-wasip2
 echo "Done"
 
+echo "Building openai model client plugin..."
+cargo build --release -p ein_openai --target wasm32-wasip2
+echo "Done"
+
 ############################
 # Install                  #
 ############################
@@ -69,4 +73,8 @@ echo "Done"
 
 echo "Installing anthropic model client plugin..."
 cp target/wasm32-wasip2/release/ein_anthropic.wasm "$MODEL_CLIENTS_DIR"
+echo "Done"
+
+echo "Installing openai model client plugin..."
+cp target/wasm32-wasip2/release/ein_openai.wasm "$MODEL_CLIENTS_DIR"
 echo "Done"
