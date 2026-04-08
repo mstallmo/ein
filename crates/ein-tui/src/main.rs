@@ -1104,8 +1104,6 @@ async fn connection_manager(
 // Entry point
 // ---------------------------------------------------------------------------
 
-// BUGFIX: Select the configured model from the configured `model_client` not just
-// the first one that we happen to get in the map
 
 /// Derives a short model name for the status bar from the client config.
 ///
@@ -1114,13 +1112,10 @@ async fn connection_manager(
 fn model_display_from_config(cfg: &config::ClientConfig) -> String {
     let model_full = cfg
         .plugin_configs
-        .values()
-        .find_map(|pc| {
-            pc.params
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-        })
+        .get(&cfg.model_client_name)
+        .and_then(|pc| pc.params.get("model"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
         .unwrap_or_else(|| "unknown".to_string());
     model_full
         .split_once('/')

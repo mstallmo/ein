@@ -304,13 +304,17 @@ impl ToolFuncProps {
     pub fn add_prop(&mut self, name: impl ToString, info: ToolFuncPropInfo) {
         self.0.insert(name.to_string(), info);
     }
+
+    pub fn props(&self) -> &collections::HashMap<String, ToolFuncPropInfo> {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolFuncPropInfo {
     #[serde(rename = "type")]
-    prop_type: String,
-    description: String,
+    pub prop_type: String,
+    pub description: String,
 }
 
 impl ToolFuncPropInfo {

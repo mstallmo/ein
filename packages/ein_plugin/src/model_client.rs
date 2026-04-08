@@ -7,6 +7,8 @@ pub mod syscalls {
 
 pub use ein_http::{HttpRequest, HttpResponse, RequestDeniedError};
 
+use std::collections;
+
 #[doc(hidden)]
 pub mod __wit {
     use super::ConstructableModelClientPlugin;
@@ -60,21 +62,22 @@ pub trait ModelClientPlugin: Send + Sync {
 // ---------------------------------------------------------------------------
 // Shared request / response types
 //
-// These mirror the OpenAI chat completion wire format used by OpenRouter.
 // Serde attributes must preserve the exact field names and shapes the API
 // expects so that serialised messages can be sent back to the LLM unchanged.
 // ---------------------------------------------------------------------------
 
 use serde::{Deserialize, Serialize};
 
+use crate::tool;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
-    /// Full conversation history in OpenAI message format. Kept as raw
-    /// `Value`s so the server's `Vec<Value>` history can be passed through
-    /// without an extra conversion layer.
-    pub messages: Vec<serde_json::Value>,
-    pub tools: Vec<serde_json::Value>,
+    /// Full conversation history. Typed as `Vec<Message>` so the contract is
+    /// explicit and compiler-enforced; serialises to OpenAI chat-completion
+    /// format, which OpenAI-compatible plugins can send verbatim.
+    pub messages: Vec<Message>,
+    pub tools: Vec<Tool>,
     pub max_tokens: i32,
 }
 
@@ -93,18 +96,104 @@ pub struct CompletionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Choice {
-    pub index: usize,
+    pub index: Option<usize>,
     pub finish_reason: FinishReason,
     pub message: Message,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
     ToolCalls,
     #[serde(other)]
     Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum Tool {
+    Function { function: ToolFunction },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: ToolFunctionParams,
+}
+
+impl From<&tool::ToolDef> for Tool {
+    fn from(tool: &tool::ToolDef) -> Self {
+        match tool {
+            tool::ToolDef::Function {
+                name,
+                description,
+                parameters,
+            } => Self::Function {
+                function: ToolFunction {
+                    name: name.clone(),
+                    description: description.clone(),
+                    parameters: parameters.into(),
+                },
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum ToolFunctionParams {
+    Object {
+        properties: ToolFuncProps,
+        required: Vec<String>,
+    },
+}
+
+impl From<&tool::ToolFunctionParams> for ToolFunctionParams {
+    fn from(tool: &tool::ToolFunctionParams) -> Self {
+        match tool {
+            tool::ToolFunctionParams::Object {
+                properties,
+                required,
+            } => Self::Object {
+                properties: properties.into(),
+                required: required.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ToolFuncProps(collections::HashMap<String, ToolFuncPropInfo>);
+
+impl From<&tool::ToolFuncProps> for ToolFuncProps {
+    fn from(tool: &tool::ToolFuncProps) -> Self {
+        Self(
+            tool.props()
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.into()))
+                .collect::<collections::HashMap<String, ToolFuncPropInfo>>(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ToolFuncPropInfo {
+    #[serde(rename = "type")]
+    prop_type: String,
+    description: String,
+}
+
+impl From<&tool::ToolFuncPropInfo> for ToolFuncPropInfo {
+    fn from(tool: &tool::ToolFuncPropInfo) -> Self {
+        Self {
+            prop_type: tool.prop_type.clone(),
+            description: tool.description.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +222,9 @@ pub enum Role {
 pub enum ToolCall {
     Function {
         id: String,
+        /// Position index from streaming response deltas. Not part of the
+        /// OpenAI request schema; omitted when serialising back to the API.
+        #[serde(skip_serializing, default)]
         index: usize,
         function: FunctionCall,
     },

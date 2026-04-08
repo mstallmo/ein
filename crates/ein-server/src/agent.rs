@@ -29,12 +29,11 @@
 //! ```
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{FinishReason, FunctionCall, ToolCall};
+use ein_plugin::model_client::{FinishReason, FunctionCall, Message, Role, ToolCall};
 use ein_proto::ein::{
     AgentError, AgentEvent, AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart,
     agent_event::Event,
 };
-use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tonic::Status;
 
@@ -72,21 +71,17 @@ const MAX_TOOL_RESULT_CHARS: usize = 2000;
 /// - its `role` is `"tool"`
 /// - it is more than `KEEP_RECENT_MESSAGES` positions from the end of `messages`
 /// - its `content` length exceeds `MAX_TOOL_RESULT_CHARS`
-fn truncate_old_tool_results(messages: &mut Vec<Value>) {
+fn truncate_old_tool_results(messages: &mut Vec<Message>) {
     let len = messages.len();
     let truncate_before = len.saturating_sub(KEEP_RECENT_MESSAGES);
 
     for msg in messages[..truncate_before].iter_mut() {
-        if msg.get("role").and_then(|r| r.as_str()) != Some("tool") {
+        if !matches!(msg.role, Role::Tool) {
             continue;
         }
-        let content_len = msg
-            .get("content")
-            .and_then(|c| c.as_str())
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let content_len = msg.content.as_deref().map(|s| s.len()).unwrap_or(0);
         if content_len > MAX_TOOL_RESULT_CHARS {
-            msg["content"] = json!(format!("[Tool result truncated: {content_len} chars]"));
+            msg.content = Some(format!("[Tool result truncated: {content_len} chars]"));
         }
     }
 }
@@ -99,7 +94,7 @@ fn truncate_old_tool_results(messages: &mut Vec<Value>) {
 /// results) is written back into `messages` in place so the caller's
 /// conversation state stays current.
 pub async fn run_agent(
-    messages: &mut Vec<Value>,
+    messages: &mut Vec<Message>,
     tool_registry: &mut ToolRegistry,
     model_session: &mut ModelClientSession,
     tx: &mpsc::Sender<Result<AgentEvent, Status>>,
@@ -122,7 +117,7 @@ pub async fn run_agent(
         );
 
         let resp = match model_session
-            .complete(messages, &tool_registry.schemas()?)
+            .complete(messages, &tool_registry.schemas())
             .await
         {
             Ok(r) => r,
@@ -186,10 +181,6 @@ pub async fn run_agent(
             .next()
             .ok_or_else(|| anyhow!("Response contained no choices"))?;
 
-        // Append the assistant's reply to the running history immediately so
-        // tool results added in the same iteration are correctly sequenced.
-        messages.push(serde_json::to_value(&choice.message)?);
-
         let content = choice
             .message
             .content
@@ -207,10 +198,18 @@ pub async fn run_agent(
             .as_ref()
             .map(|tc| !tc.is_empty())
             .unwrap_or(false);
+
+        // Clone tool_calls before moving the message so we can iterate
+        // over them later while also pushing to messages.
+        let tool_calls = choice.message.tool_calls.clone();
+
+        // Append the assistant's reply to the running history immediately so
+        // tool results added in the same iteration are correctly sequenced.
+        messages.push(choice.message);
         let effective_finish = if has_tool_calls {
             FinishReason::ToolCalls
         } else {
-            choice.finish_reason.clone()
+            choice.finish_reason
         };
 
         println!(
@@ -229,7 +228,7 @@ pub async fn run_agent(
                         .await;
                 }
 
-                if let Some(tool_calls) = &choice.message.tool_calls {
+                if let Some(tool_calls) = &tool_calls {
                     for tool_call in tool_calls {
                         match tool_call {
                             ToolCall::Function { id, function, .. } => {
@@ -263,11 +262,12 @@ pub async fn run_agent(
 
                                 // Append the tool result so the LLM sees it on
                                 // the next iteration.
-                                messages.push(json!({
-                                    "role": "tool",
-                                    "tool_call_id": id,
-                                    "content": result_str,
-                                }));
+                                messages.push(Message {
+                                    role: Role::Tool,
+                                    content: Some(result_str),
+                                    tool_call_id: Some(id.clone()),
+                                    tool_calls: None,
+                                });
                             }
                         }
                     }
@@ -286,10 +286,15 @@ pub async fn run_agent(
                         );
                         // The empty assistant turn is already in `messages`; add
                         // a user prompt to coax the model into producing output.
-                        messages.push(json!({
-                            "role": "user",
-                            "content": "Your last response was empty. Emit a tool call now to make progress.",
-                        }));
+                        messages.push(Message {
+                            role: Role::User,
+                            content: Some(
+                                "Your last response was empty. Emit a tool call now to make progress."
+                                    .to_string(),
+                            ),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
                         continue;
                     }
                     eprintln!(
