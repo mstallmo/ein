@@ -142,12 +142,13 @@ impl SessionStore {
     /// Overwrite the stored message history for an existing session.
     pub async fn save_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
         let json = serde_json::to_string(messages).context("serialising messages")?;
-        sqlx::query("UPDATE sessions SET messages_json = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE sessions SET messages_json = ? WHERE id = ?")
             .bind(&json)
             .bind(id)
             .execute(&self.pool)
             .await
             .with_context(|| format!("saving messages for session {id}"))?;
+        anyhow::ensure!(result.rows_affected() == 1, "session {id} not found");
         Ok(())
     }
 }
@@ -249,5 +250,14 @@ mod tests {
         let id1 = uuid::Uuid::now_v7().to_string();
         let id2 = uuid::Uuid::now_v7().to_string();
         assert!(id1 <= id2, "UUID v7 ids should be non-decreasing");
+    }
+
+    #[tokio::test]
+    async fn save_messages_on_missing_session_returns_error() {
+        let store = make_store().await;
+        let result = store
+            .save_messages("nonexistent", &[simple_message(Role::User, "hi")])
+            .await;
+        assert!(result.is_err());
     }
 }
