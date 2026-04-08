@@ -7,6 +7,8 @@ pub mod syscalls {
 
 pub use ein_http::{HttpRequest, HttpResponse, RequestDeniedError};
 
+use std::collections;
+
 #[doc(hidden)]
 pub mod __wit {
     use super::ConstructableModelClientPlugin;
@@ -66,6 +68,8 @@ pub trait ModelClientPlugin: Send + Sync {
 
 use serde::{Deserialize, Serialize};
 
+use crate::tool;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
@@ -73,7 +77,7 @@ pub struct CompletionRequest {
     /// explicit and compiler-enforced; serialises to OpenAI chat-completion
     /// format, which OpenAI-compatible plugins can send verbatim.
     pub messages: Vec<Message>,
-    pub tools: Vec<serde_json::Value>,
+    pub tools: Vec<Tool>,
     pub max_tokens: i32,
 }
 
@@ -92,7 +96,7 @@ pub struct CompletionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Choice {
-    pub index: usize,
+    pub index: Option<usize>,
     pub finish_reason: FinishReason,
     pub message: Message,
 }
@@ -104,6 +108,92 @@ pub enum FinishReason {
     ToolCalls,
     #[serde(other)]
     Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum Tool {
+    Function { function: ToolFunction },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: ToolFunctionParams,
+}
+
+impl From<&tool::ToolDef> for Tool {
+    fn from(tool: &tool::ToolDef) -> Self {
+        match tool {
+            tool::ToolDef::Function {
+                name,
+                description,
+                parameters,
+            } => Self::Function {
+                function: ToolFunction {
+                    name: name.clone(),
+                    description: description.clone(),
+                    parameters: parameters.into(),
+                },
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum ToolFunctionParams {
+    Object {
+        properties: ToolFuncProps,
+        required: Vec<String>,
+    },
+}
+
+impl From<&tool::ToolFunctionParams> for ToolFunctionParams {
+    fn from(tool: &tool::ToolFunctionParams) -> Self {
+        match tool {
+            tool::ToolFunctionParams::Object {
+                properties,
+                required,
+            } => Self::Object {
+                properties: properties.into(),
+                required: required.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ToolFuncProps(collections::HashMap<String, ToolFuncPropInfo>);
+
+impl From<&tool::ToolFuncProps> for ToolFuncProps {
+    fn from(tool: &tool::ToolFuncProps) -> Self {
+        Self(
+            tool.props()
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.into()))
+                .collect::<collections::HashMap<String, ToolFuncPropInfo>>(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ToolFuncPropInfo {
+    #[serde(rename = "type")]
+    prop_type: String,
+    description: String,
+}
+
+impl From<&tool::ToolFuncPropInfo> for ToolFuncPropInfo {
+    fn from(tool: &tool::ToolFuncPropInfo) -> Self {
+        Self {
+            prop_type: tool.prop_type.clone(),
+            description: tool.description.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,7 +224,7 @@ pub enum ToolCall {
         id: String,
         /// Position index from streaming response deltas. Not part of the
         /// OpenAI request schema; omitted when serialising back to the API.
-        #[serde(skip_serializing)]
+        #[serde(skip_serializing, default)]
         index: usize,
         function: FunctionCall,
     },

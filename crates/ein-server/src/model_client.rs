@@ -7,8 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{CompletionRequest, CompletionResponse, Message};
-use serde_json::Value;
+use ein_plugin::model_client::{CompletionRequest, CompletionResponse, Message, Tool};
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -178,7 +177,7 @@ impl ModelClientSession {
     pub async fn complete(
         &mut self,
         messages: &[Message],
-        tools: &[Value],
+        tools: &[Tool],
     ) -> anyhow::Result<CompletionResponse> {
         let req = CompletionRequest {
             model: self.params.model.clone(),
@@ -243,6 +242,7 @@ impl WasmModelClient {
         req: &CompletionRequest,
     ) -> anyhow::Result<CompletionResponse> {
         let request_json = serde_json::to_string(req)?;
+        eprintln!("[model_client] RAW request: {request_json}");
 
         let result = self
             .bindings
@@ -250,7 +250,11 @@ impl WasmModelClient {
             .model_client()
             .call_complete(&mut self.store, self.handle, &request_json)
             .await?
-            .map_err(|e| anyhow::anyhow!(e))?;
+            .map_err(|e| {
+                eprintln!("[model_client] RAW error: {e}");
+
+                anyhow::anyhow!(e)
+            })?;
 
         eprintln!("[model_client] raw response: {result}");
 

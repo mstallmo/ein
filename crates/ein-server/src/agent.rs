@@ -117,7 +117,7 @@ pub async fn run_agent(
         );
 
         let resp = match model_session
-            .complete(messages, &tool_registry.schemas()?)
+            .complete(messages, &tool_registry.schemas())
             .await
         {
             Ok(r) => r,

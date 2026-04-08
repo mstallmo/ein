@@ -2,9 +2,11 @@
 // Copyright 2026 Mason Stallmo
 
 use crate::{HarnessState, bindings::Plugin};
-use ein_plugin::tool::{ToolDef, ToolResult};
+use ein_plugin::{
+    model_client::Tool,
+    tool::{ToolDef, ToolResult},
+};
 use ein_proto::ein::{AgentEvent, PluginConfig};
-use serde_json::Value;
 use std::{
     collections::{self, HashMap},
     net::IpAddr,
@@ -242,11 +244,11 @@ impl ToolRegistry {
         self.0.insert(tool.name().to_string(), tool);
     }
 
-    pub fn schemas(&self) -> Result<Vec<Value>, serde_json::Error> {
+    pub fn schemas(&self) -> Vec<Tool> {
         self.0
             .values()
-            .map(|tool| serde_json::to_value(tool.schema()))
-            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map(|tool| tool.schema().into())
+            .collect::<Vec<Tool>>()
     }
 
     pub fn get(&mut self, name: &str) -> Option<&mut WasmTool> {
