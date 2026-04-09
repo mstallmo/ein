@@ -33,7 +33,8 @@ use crate::agent::run_agent;
 use crate::model_client::ModelClientSessionManager;
 use crate::tools::{ToolRegistry, build_tool_linker};
 use ein_proto::ein::{
-    AgentError, AgentEvent, UserInput, agent_event::Event, agent_server::Agent, user_input,
+    AgentError, AgentEvent, SessionStarted, UserInput, agent_event::Event, agent_server::Agent,
+    user_input,
 };
 
 /// gRPC service struct.
@@ -96,6 +97,7 @@ impl Agent for AgentServer {
         let engine = self.engine.clone();
         let model_client_session_manager = self.model_client_session_manager.clone();
         let tool_linker = self.tool_linker.clone();
+        let session_store = self.session_store.clone();
 
         tokio::spawn(async move {
             println!("[session] new session started");
@@ -120,6 +122,30 @@ impl Agent for AgentServer {
                     return;
                 }
             };
+
+            // --- Session persistence: create or resume ---
+            let (session_id, is_resumed) = {
+                let raw_id = session_cfg.session_id.trim().to_string();
+                if raw_id.is_empty() {
+                    (uuid::Uuid::now_v7().to_string(), false)
+                } else {
+                    let exists = session_store.session_exists(&raw_id).await.unwrap_or(false);
+                    (raw_id, exists)
+                }
+            };
+
+            if !is_resumed {
+                let config_record = crate::persistence::SessionConfigRecord::from(&session_cfg);
+                let config_json = serde_json::to_string(&config_record).unwrap_or_default();
+                if let Err(e) = session_store.create_session(&session_id, &config_json).await {
+                    eprintln!("[session] failed to persist new session {session_id}: {e}");
+                }
+            }
+
+            println!(
+                "[session] {} session {session_id}",
+                if is_resumed { "resumed" } else { "created" }
+            );
 
             // --- Phase 2: get (or prepare) model client, then instantiate ---
 
@@ -161,28 +187,45 @@ impl Agent for AgentServer {
             println!("[session] plugins loaded");
 
             // --- Phase 4: prompt loop ---
-            // `messages` accumulates the full conversation history for this
-            // session in OpenAI chat-completion format.
-            let mut messages: Vec<Message> = vec![];
+            // Restore history if resuming; otherwise start fresh with an optional system message.
+            let mut messages: Vec<Message> = if is_resumed {
+                session_store
+                    .load_messages(&session_id)
+                    .await
+                    .unwrap_or_default()
+                    .unwrap_or_default()
+            } else {
+                let mut msgs = vec![];
+                // Prepend a system message so the model knows which filesystem
+                // paths the file tools (Read, Write, Edit) are allowed to access.
+                if !session_cfg.allowed_paths.is_empty() {
+                    let paths_list = session_cfg
+                        .allowed_paths
+                        .iter()
+                        .map(|p| format!("- {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    msgs.push(Message {
+                        role: Role::System,
+                        content: Some(format!(
+                            "The following filesystem paths are accessible to file tools (Read, Write, Edit):\n{paths_list}"
+                        )),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                msgs
+            };
 
-            // Prepend a system message so the model knows which filesystem
-            // paths the file tools (Read, Write, Edit) are allowed to access.
-            if !session_cfg.allowed_paths.is_empty() {
-                let paths_list = session_cfg
-                    .allowed_paths
-                    .iter()
-                    .map(|p| format!("- {p}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                messages.push(Message {
-                    role: Role::System,
-                    content: Some(format!(
-                        "The following filesystem paths are accessible to file tools (Read, Write, Edit):\n{paths_list}"
-                    )),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-            }
+            // Notify the client of the assigned session ID before any agent events.
+            let _ = tx
+                .send(Ok(AgentEvent {
+                    event: Some(Event::SessionStarted(SessionStarted {
+                        session_id: session_id.clone(),
+                        resumed: is_resumed,
+                    })),
+                }))
+                .await;
 
             while let Ok(Some(msg)) = inbound.message().await {
                 match msg.input {
@@ -201,6 +244,11 @@ impl Agent for AgentServer {
                             eprintln!("[session] agent error: {e}");
                             let _ = tx.send(Err(Status::internal(e.to_string()))).await;
                             break;
+                        }
+
+                        // Persist updated history after every agent turn.
+                        if let Err(e) = session_store.save_messages(&session_id, &messages).await {
+                            eprintln!("[session] failed to save messages for {session_id}: {e}");
                         }
                     }
                     Some(user_input::Input::ConfigUpdate(cfg)) => {
