@@ -129,6 +129,16 @@ impl Agent for AgentServer {
                 if raw_id.is_empty() {
                     (uuid::Uuid::now_v7().to_string(), false)
                 } else {
+                    // Reject non-UUID session IDs to catch typos early and enforce the protocol
+                    // contract stated in the proto comment.
+                    if uuid::Uuid::parse_str(&raw_id).is_err() {
+                        let _ = tx
+                            .send(Err(Status::invalid_argument(format!(
+                                "session_id must be a valid UUID, got: {raw_id}"
+                            ))))
+                            .await;
+                        return;
+                    }
                     let exists = session_store.session_exists(&raw_id).await.unwrap_or(false);
                     (raw_id, exists)
                 }
@@ -139,6 +149,10 @@ impl Agent for AgentServer {
                 let config_json = serde_json::to_string(&config_record).unwrap_or_default();
                 if let Err(e) = session_store.create_session(&session_id, &config_json).await {
                     eprintln!("[session] failed to persist new session {session_id}: {e}");
+                    let _ = tx
+                        .send(Err(Status::internal(format!("Failed to create session: {e}"))))
+                        .await;
+                    return;
                 }
             }
 
@@ -189,11 +203,19 @@ impl Agent for AgentServer {
             // --- Phase 4: prompt loop ---
             // Restore history if resuming; otherwise start fresh with an optional system message.
             let mut messages: Vec<Message> = if is_resumed {
-                session_store
-                    .load_messages(&session_id)
-                    .await
-                    .unwrap_or_default()
-                    .unwrap_or_default()
+                match session_store.load_messages(&session_id).await {
+                    Ok(Some(msgs)) => msgs,
+                    Ok(None) => vec![], // session exists but has no messages yet
+                    Err(e) => {
+                        eprintln!("[session] failed to load messages for {session_id}: {e}");
+                        let _ = tx
+                            .send(Err(Status::internal(format!(
+                                "Failed to load session history: {e}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                }
             } else {
                 let mut msgs = vec![];
                 // Prepend a system message so the model knows which filesystem
