@@ -139,7 +139,18 @@ impl Agent for AgentServer {
                             .await;
                         return;
                     }
-                    let exists = session_store.session_exists(&raw_id).await.unwrap_or(false);
+                    let exists = match session_store.session_exists(&raw_id).await {
+                        Ok(exists) => exists,
+                        Err(e) => {
+                            eprintln!("[session] failed to check session existence for {raw_id}: {e}");
+                            let _ = tx
+                                .send(Err(Status::internal(format!(
+                                    "Failed to check session: {e}"
+                                ))))
+                                .await;
+                            return;
+                        }
+                    };
                     (raw_id, exists)
                 }
             };
