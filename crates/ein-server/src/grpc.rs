@@ -126,6 +126,7 @@ impl Agent for AgentServer {
             // --- Session persistence: create or resume ---
             let (session_id, is_resumed) = {
                 let raw_id = session_cfg.session_id.trim().to_string();
+
                 if raw_id.is_empty() {
                     (uuid::Uuid::now_v7().to_string(), false)
                 } else {
@@ -139,18 +140,24 @@ impl Agent for AgentServer {
                             .await;
                         return;
                     }
+
                     let exists = match session_store.session_exists(&raw_id).await {
                         Ok(exists) => exists,
                         Err(e) => {
-                            eprintln!("[session] failed to check session existence for {raw_id}: {e}");
+                            eprintln!(
+                                "[session] failed to check session existence for {raw_id}: {e}"
+                            );
+
                             let _ = tx
                                 .send(Err(Status::internal(format!(
                                     "Failed to check session: {e}"
                                 ))))
                                 .await;
+
                             return;
                         }
                     };
+
                     (raw_id, exists)
                 }
             };
@@ -159,11 +166,19 @@ impl Agent for AgentServer {
                 let config_record = crate::persistence::SessionConfigRecord::from(&session_cfg);
                 let config_json = serde_json::to_string(&config_record)
                     .expect("SessionConfigRecord contains only serialisable primitive types");
-                if let Err(e) = session_store.create_session(&session_id, &config_json).await {
+
+                if let Err(e) = session_store
+                    .create_session(&session_id, &config_json)
+                    .await
+                {
                     eprintln!("[session] failed to persist new session {session_id}: {e}");
+
                     let _ = tx
-                        .send(Err(Status::internal(format!("Failed to create session: {e}"))))
+                        .send(Err(Status::internal(format!(
+                            "Failed to create session: {e}"
+                        ))))
                         .await;
+
                     return;
                 }
             }
@@ -220,11 +235,13 @@ impl Agent for AgentServer {
                     Ok(None) => vec![], // session exists but has no messages yet
                     Err(e) => {
                         eprintln!("[session] failed to load messages for {session_id}: {e}");
+
                         let _ = tx
                             .send(Err(Status::internal(format!(
                                 "Failed to load session history: {e}"
                             ))))
                             .await;
+
                         return;
                     }
                 }
@@ -239,6 +256,7 @@ impl Agent for AgentServer {
                         .map(|p| format!("- {p}"))
                         .collect::<Vec<_>>()
                         .join("\n");
+
                     msgs.push(Message {
                         role: Role::System,
                         content: Some(format!(
@@ -248,6 +266,7 @@ impl Agent for AgentServer {
                         tool_call_id: None,
                     });
                 }
+
                 msgs
             };
 
@@ -265,6 +284,7 @@ impl Agent for AgentServer {
                 match msg.input {
                     Some(user_input::Input::Prompt(prompt)) => {
                         println!("[session] prompt received ({} chars)", prompt.len());
+
                         messages.push(Message {
                             role: Role::User,
                             content: Some(prompt),

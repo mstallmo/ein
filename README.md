@@ -1,6 +1,6 @@
 # Ein
 
-Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop (powered by Claude via OpenRouter) and executes tools implemented as pluggable WASM modules. A terminal UI client connects to the server and provides an interactive chat interface.
+Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop and executes tools implemented as pluggable WASM modules. Multiple model backends are supported (OpenRouter, Anthropic, OpenAI, Ollama). A terminal UI client connects to the server and provides an interactive chat interface. Sessions are persisted to SQLite so conversations can be resumed across reconnects.
 
 ```
 ┌─────────────────────────┐          ┌──────────────────────────────┐
@@ -8,8 +8,9 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop (
 │                         │◄────────►│                              │
 │  Interactive chat UI    │          │  LLM agent loop              │
 │  Connection retry       │          │  WASM tool executor          │
-│  Slash command hints    │          │  OpenRouter client           │
+│  Slash command hints    │          │  Pluggable model clients     │
 │  Animated thinking UI   │          │  Per-session sandboxing      │
+│                         │          │  SQLite session persistence  │
 └─────────────────────────┘          └──────────────────────────────┘
 ```
 
@@ -17,7 +18,7 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop (
 
 ### Prerequisites
 
-- [Sign up for OpenRouter](https://openrouter.ai/) and [create an API key](https://openrouter.ai/settings/keys)
+- API credentials for your chosen model backend (e.g. [OpenRouter](https://openrouter.ai/settings/keys), Anthropic, OpenAI) or a running [Ollama](https://ollama.com) instance
 - Install Rust
 
 ```bash
@@ -31,17 +32,18 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add wasm32-wasip2
 ```
 
-**Build the WASM plugins** (Bash, Read, Write, Edit tools)
+**Build the WASM plugins** (tool plugins and model client plugins)
 ```bash
 ./scripts/build_install_plugins.sh
 ```
 
-> In debug builds, plugins are loaded automatically from `./target/wasm32-wasip2/debug/` — no installation needed.
+> In debug builds, plugins are loaded automatically from `./target/wasm32-wasip2/debug/` — no installation needed. In release builds, tool plugins are installed to `~/.ein/plugins/tools/` and model client plugins to `~/.ein/plugins/model_clients/`.
 
 ### Configure credentials
 
-Before running, add your OpenRouter API key to `~/.ein/config.json` (created automatically on first TUI launch):
+Add your model backend credentials to `~/.ein/config.json` (created automatically on first TUI launch). Examples for each supported backend:
 
+**OpenRouter**
 ```json
 {
   "plugin_configs": {
@@ -49,6 +51,46 @@ Before running, add your OpenRouter API key to `~/.ein/config.json` (created aut
       "config": {
         "api_key": "sk-or-...",
         "base_url": "https://openrouter.ai/api/v1"
+      }
+    }
+  }
+}
+```
+
+**Anthropic**
+```json
+{
+  "plugin_configs": {
+    "ein_anthropic": {
+      "config": {
+        "api_key": "sk-ant-..."
+      }
+    }
+  }
+}
+```
+
+**OpenAI**
+```json
+{
+  "plugin_configs": {
+    "ein_openai": {
+      "config": {
+        "api_key": "sk-..."
+      }
+    }
+  }
+}
+```
+
+**Ollama** (no API key required)
+```json
+{
+  "plugin_configs": {
+    "ein_ollama": {
+      "config": {
+        "base_url": "http://localhost:11434",
+        "model": "llama3"
       }
     }
   }
@@ -115,14 +157,24 @@ In addition, at startup the TUI asks whether to add the current working director
 | `allowed_hosts` | Additional hostnames for this plugin only, merged with the global list |
 | `config` | Arbitrary key-value pairs forwarded to the plugin at instantiation |
 
-Known `config` keys for `ein_openrouter`:
+Known `config` keys per plugin:
 
-| Key | Description |
-|-----|-------------|
-| `api_key` | Your OpenRouter API key |
-| `base_url` | Model API endpoint; restricts outbound connections to that host (empty = deny all; `"*"` = allow all) |
-| `model` | OpenRouter model ID |
-| `max_tokens` | Maximum tokens per LLM response |
+| Plugin | Key | Description |
+|--------|-----|-------------|
+| `ein_openrouter` | `api_key` | OpenRouter API key |
+| `ein_openrouter` | `base_url` | API endpoint; restricts outbound connections to that host |
+| `ein_openrouter` | `model` | OpenRouter model ID (e.g. `anthropic/claude-haiku-4.5`) |
+| `ein_openrouter` | `max_tokens` | Maximum tokens per LLM response |
+| `ein_anthropic` | `api_key` | Anthropic API key |
+| `ein_anthropic` | `model` | Anthropic model ID (e.g. `claude-haiku-4-5`) |
+| `ein_anthropic` | `max_tokens` | Maximum tokens per LLM response |
+| `ein_openai` | `api_key` | OpenAI API key |
+| `ein_openai` | `base_url` | API endpoint (defaults to OpenAI; set for compatible providers) |
+| `ein_openai` | `model` | Model ID (e.g. `gpt-4o`) |
+| `ein_openai` | `max_tokens` | Maximum tokens per LLM response |
+| `ein_ollama` | `base_url` | Ollama server URL (e.g. `http://localhost:11434`) |
+| `ein_ollama` | `model` | Model name (e.g. `llama3`) |
+| `ein_ollama` | `max_tokens` | Maximum tokens per LLM response |
 
 Changes to `config.json` are picked up automatically while the TUI is running — plugin config updates take effect without restarting.
 
@@ -176,17 +228,25 @@ Tools are WASM components loaded at startup. Three are included out of the box:
 ```
 crates/
   ein-proto/    Protocol Buffer definitions (gRPC service + message types)
-  ein-server/   gRPC server — agent loop, WASM plugin host
+  ein-server/   gRPC server — agent loop, WASM plugin host, session persistence
   ein-tui/      Terminal UI client
 packages/
-  ein_tool/     WASM plugin interface (ToolPlugin trait, ToolDef, syscalls)
-  ein_bash/     Bash tool plugin
-  ein_read/     Read tool plugin
-  ein_write/    Write tool plugin
-  ein_edit/     Edit tool plugin
+  ein_plugin/       WASM plugin interface (ToolPlugin trait, ToolDef, syscalls)
+  ein_bash/         Bash tool plugin
+  ein_read/         Read tool plugin
+  ein_write/        Write tool plugin
+  ein_edit/         Edit tool plugin
+  ein_model_client/ Shared model client types and WIT bindings
+  ein_http/         WASM-native HTTP client (used by model client plugins)
+  ein_openrouter/   OpenRouter model client plugin
+  ein_anthropic/    Anthropic model client plugin
+  ein_openai/       OpenAI model client plugin
+  ein_ollama/       Ollama model client plugin
 ```
 
-The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output. A `config_update` message variant allows the TUI to push plugin config changes to a live session without reconnecting.
+The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map + optional `session_id` for resume), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output — starting with a `SessionStarted` event carrying the session's UUID and whether it was resumed. A `config_update` message variant allows the TUI to push plugin config changes to a live session without reconnecting.
+
+Sessions are persisted to `~/.ein/sessions.db`. Supplying a previously assigned `session_id` in `SessionConfig` causes the server to restore the conversation history and resume as if the session never disconnected.
 
 ## License
 

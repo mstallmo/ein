@@ -24,14 +24,6 @@ pub struct SessionConfigRecord {
     pub plugin_configs: HashMap<String, PluginConfigRecord>,
 }
 
-/// Serialisable snapshot of a `PluginConfig` proto message.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PluginConfigRecord {
-    pub allowed_paths: Vec<String>,
-    pub allowed_hosts: Vec<String>,
-    pub params_json: String,
-}
-
 impl From<&ein_proto::ein::SessionConfig> for SessionConfigRecord {
     fn from(cfg: &ein_proto::ein::SessionConfig) -> Self {
         Self {
@@ -41,17 +33,26 @@ impl From<&ein_proto::ein::SessionConfig> for SessionConfigRecord {
             plugin_configs: cfg
                 .plugin_configs
                 .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        PluginConfigRecord {
-                            allowed_paths: v.allowed_paths.clone(),
-                            allowed_hosts: v.allowed_hosts.clone(),
-                            params_json: v.params_json.clone(),
-                        },
-                    )
-                })
+                .map(|(k, v)| (k.clone(), v.into()))
                 .collect(),
+        }
+    }
+}
+
+/// Serialisable snapshot of a `PluginConfig` proto message.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PluginConfigRecord {
+    pub allowed_paths: Vec<String>,
+    pub allowed_hosts: Vec<String>,
+    pub params_json: String,
+}
+
+impl From<&ein_proto::ein::PluginConfig> for PluginConfigRecord {
+    fn from(cfg: &ein_proto::ein::PluginConfig) -> Self {
+        Self {
+            allowed_paths: cfg.allowed_paths.clone(),
+            allowed_hosts: cfg.allowed_hosts.clone(),
+            params_json: cfg.params_json.clone(),
         }
     }
 }
@@ -71,10 +72,12 @@ impl SessionStore {
         )
         .await
         .with_context(|| format!("opening session database at {}", path.display()))?;
+
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
             .context("running database migrations")?;
+
         Ok(Self { pool })
     }
 
@@ -84,10 +87,12 @@ impl SessionStore {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .context("opening in-memory database")?;
+
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
             .context("running database migrations")?;
+
         Ok(Self { pool })
     }
 
@@ -101,6 +106,7 @@ impl SessionStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
+
         sqlx::query(
             "INSERT INTO sessions (id, created_at, session_config_json, messages_json)
              VALUES (?, ?, ?, ?)",
@@ -112,6 +118,7 @@ impl SessionStore {
         .execute(&self.pool)
         .await
         .with_context(|| format!("creating session {id}"))?;
+
         Ok(())
     }
 
@@ -122,6 +129,7 @@ impl SessionStore {
             .fetch_one(&self.pool)
             .await
             .context("checking session existence")?;
+
         Ok(row.0 > 0)
     }
 
@@ -134,11 +142,13 @@ impl SessionStore {
                 .fetch_optional(&self.pool)
                 .await
                 .context("loading messages")?;
+
         match row {
             None => Ok(None),
             Some((json,)) => {
                 let messages: Vec<Message> =
                     serde_json::from_str(&json).context("deserialising messages")?;
+
                 Ok(Some(messages))
             }
         }
@@ -153,7 +163,9 @@ impl SessionStore {
             .execute(&self.pool)
             .await
             .with_context(|| format!("saving messages for session {id}"))?;
+
         anyhow::ensure!(result.rows_affected() == 1, "session {id} not found");
+
         Ok(())
     }
 }
