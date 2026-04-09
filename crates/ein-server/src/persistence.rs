@@ -79,7 +79,8 @@ impl SessionStore {
     }
 
     /// Open an in-memory database and run migrations — intended for unit tests only.
-    pub async fn open_in_memory() -> Result<Self> {
+    #[cfg(test)]
+    pub(crate) async fn open_in_memory() -> Result<Self> {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .context("opening in-memory database")?;
@@ -91,6 +92,10 @@ impl SessionStore {
     }
 
     /// Insert a new session record. Returns an error if `id` already exists.
+    ///
+    /// `config_json` is stored for auditing and future session-list UX (e.g. showing
+    /// which model or paths were active). It is not read back during session resume —
+    /// the client always re-sends a fresh `SessionConfig` on reconnect.
     pub async fn create_session(&self, id: &str, config_json: &str) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

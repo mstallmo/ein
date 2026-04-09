@@ -157,7 +157,8 @@ impl Agent for AgentServer {
 
             if !is_resumed {
                 let config_record = crate::persistence::SessionConfigRecord::from(&session_cfg);
-                let config_json = serde_json::to_string(&config_record).unwrap_or_default();
+                let config_json = serde_json::to_string(&config_record)
+                    .expect("SessionConfigRecord contains only serialisable primitive types");
                 if let Err(e) = session_store.create_session(&session_id, &config_json).await {
                     eprintln!("[session] failed to persist new session {session_id}: {e}");
                     let _ = tx
@@ -276,6 +277,10 @@ impl Agent for AgentServer {
                         {
                             eprintln!("[session] agent error: {e}");
                             let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            // Deliberate: we do not call save_messages here because this hard-error
+                            // path is only reached by catastrophic transport failures. Soft errors
+                            // (API errors, HTTP failures) are returned as Ok(()) by run_agent and
+                            // reach the save_messages call below.
                             break;
                         }
 
