@@ -68,7 +68,8 @@ impl SessionStore {
         let pool = SqlitePool::connect_with(
             sqlx::sqlite::SqliteConnectOptions::new()
                 .filename(path)
-                .create_if_missing(true),
+                .create_if_missing(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
         )
         .await
         .with_context(|| format!("opening session database at {}", path.display()))?;
