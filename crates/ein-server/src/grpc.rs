@@ -33,8 +33,9 @@ use crate::agent::run_agent;
 use crate::model_client::ModelClientSessionManager;
 use crate::tools::{ToolRegistry, build_tool_linker};
 use ein_proto::ein::{
-    AgentError, AgentEvent, SessionStarted, UserInput, agent_event::Event, agent_server::Agent,
-    user_input,
+    AgentError, AgentEvent, HistoryMessage, HistoryToolCall, ListSessionsRequest,
+    ListSessionsResponse, SessionStarted, SessionSummary, UserInput, agent_event::Event,
+    agent_server::Agent, user_input,
 };
 
 /// gRPC service struct.
@@ -80,6 +81,29 @@ impl AgentServer {
 #[tonic::async_trait]
 impl Agent for AgentServer {
     type AgentSessionStream = ReceiverStream<Result<AgentEvent, Status>>;
+
+    async fn list_sessions(
+        &self,
+        _request: Request<ListSessionsRequest>,
+    ) -> Result<Response<ListSessionsResponse>, Status> {
+        let summaries = self
+            .session_store
+            .list_sessions()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(ListSessionsResponse {
+            sessions: summaries
+                .into_iter()
+                .map(|s| SessionSummary {
+                    id: s.id,
+                    created_at: s.created_at,
+                    preview: s.preview,
+                    session_config_json: s.session_config_json,
+                })
+                .collect(),
+        }))
+    }
 
     /// Handles one client session.
     ///
@@ -158,7 +182,7 @@ impl Agent for AgentServer {
                         }
                     };
 
-                    (raw_id, exists)
+                    (raw_id.to_string(), exists)
                 }
             };
 
@@ -270,12 +294,51 @@ impl Agent for AgentServer {
                 msgs
             };
 
+            // Build history for the client when resuming an existing session.
+            let history: Vec<HistoryMessage> = if is_resumed {
+                messages
+                    .iter()
+                    .filter_map(|m| match m.role {
+                        Role::User => Some(HistoryMessage {
+                            role: "user".to_string(),
+                            content: m.content.clone().unwrap_or_default(),
+                            tool_calls: vec![],
+                        }),
+                        Role::Assistant => {
+                            let tool_calls = m
+                                .tool_calls
+                                .as_deref()
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|tc| match tc {
+                                    ein_plugin::model_client::ToolCall::Function {
+                                        function, ..
+                                    } => HistoryToolCall {
+                                        tool_name: function.name.clone(),
+                                        arguments: function.arguments.clone(),
+                                    },
+                                })
+                                .collect();
+                            Some(HistoryMessage {
+                                role: "assistant".to_string(),
+                                content: m.content.clone().unwrap_or_default(),
+                                tool_calls,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
             // Notify the client of the assigned session ID before any agent events.
             let _ = tx
                 .send(Ok(AgentEvent {
                     event: Some(Event::SessionStarted(SessionStarted {
                         session_id: session_id.clone(),
                         resumed: is_resumed,
+                        history,
                     })),
                 }))
                 .await;

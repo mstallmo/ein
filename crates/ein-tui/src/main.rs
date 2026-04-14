@@ -12,8 +12,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ein_proto::ein::{
-    AgentEvent, SessionConfig, UserInput, agent_client::AgentClient,
-    agent_event::Event as ServerEvent, user_input,
+    AgentEvent, ListSessionsRequest, SessionConfig, SessionSummary, UserInput,
+    agent_client::AgentClient, agent_event::Event as ServerEvent, user_input,
 };
 use ratatui::{
     Frame, Terminal,
@@ -29,6 +29,7 @@ use syntect::{
     parsing::SyntaxSet,
 };
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 use tonic::transport::Channel;
 use tracing::{debug, info, warn};
@@ -214,6 +215,9 @@ enum AppEvent {
     Disconnected(Option<String>),
     /// `~/.ein/config.json` changed on disk; carries the freshly parsed config.
     ConfigChanged(config::ClientConfig),
+    /// Server returned the session list. The TUI shows the session picker and
+    /// sends the chosen `SessionConfig` back via the oneshot sender.
+    SessionsLoaded(Vec<SessionSummary>, oneshot::Sender<SessionConfig>),
 }
 
 /// Whether the TUI currently has a live server connection.
@@ -256,6 +260,56 @@ enum DisplayMessage {
 }
 
 // ---------------------------------------------------------------------------
+// Session picker / CWD prompt state structs
+// ---------------------------------------------------------------------------
+
+/// State for the session picker modal shown on first connection.
+struct SessionPickerState {
+    /// Existing sessions from the server (newest-first). Index 0 in the UI is
+    /// always "New Session" and is not stored here.
+    sessions: Vec<SessionSummary>,
+    /// Currently highlighted row. 0 = "New Session", 1..=sessions.len() = existing.
+    selected: usize,
+    /// One-shot channel back to `try_connect`; send the chosen `SessionConfig`.
+    session_tx: oneshot::Sender<SessionConfig>,
+}
+
+/// State for the CWD access modal, shown only when "New Session" is chosen.
+struct CwdState {
+    cwd: String,
+    /// Base `SessionConfig` built from `~/.ein/config.json`; CWD is optionally
+    /// appended to `allowed_paths` before forwarding to `try_connect`.
+    base_config: SessionConfig,
+    /// Forwarded from `SessionPickerState.session_tx`.
+    session_tx: oneshot::Sender<SessionConfig>,
+}
+
+/// Minimal deserialization target for the `session_config_json` field stored in
+/// the database. Mirrors `SessionConfigRecord` in the server crate without
+/// requiring a cross-crate dependency.
+#[derive(serde::Deserialize, Default)]
+struct StoredSessionConfig {
+    #[serde(default)]
+    allowed_paths: Vec<String>,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
+    #[serde(default)]
+    model_client_name: String,
+    #[serde(default)]
+    plugin_configs: std::collections::HashMap<String, StoredPluginConfig>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct StoredPluginConfig {
+    #[serde(default)]
+    allowed_paths: Vec<String>,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
+    #[serde(default)]
+    params_json: String,
+}
+
+// ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
@@ -289,14 +343,25 @@ struct App {
     /// Last connection error message, shown above the connecting spinner.
     /// Replaced in-place on each disconnect; cleared when connected.
     connection_error: Option<String>,
-    /// If `Some`, the startup modal is visible asking to allow access to this directory.
-    pending_cwd_prompt: Option<String>,
+    /// When `Some`, the session picker overlay is visible (shown first on startup).
+    pending_session_picker: Option<SessionPickerState>,
+    /// When `Some`, the CWD access modal is visible (only for new sessions).
+    pending_cwd_prompt: Option<CwdState>,
+    /// Current working directory captured at startup; offered when creating new sessions.
+    cwd: Option<String>,
+    /// Current client config, kept in sync with `ConfigChanged` events.
+    current_cfg: config::ClientConfig,
 }
 
 impl App {
-    fn new(model_display: String, pending_cwd_prompt: Option<String>, cwd: String) -> Self {
+    fn new(
+        model_display: String,
+        cwd: Option<String>,
+        cwd_display: String,
+        current_cfg: config::ClientConfig,
+    ) -> Self {
         Self {
-            messages: vec![DisplayMessage::Header { cwd }],
+            messages: vec![DisplayMessage::Header { cwd: cwd_display }],
             input: String::new(),
             cursor_pos: 0,
             agent_busy: false,
@@ -310,7 +375,10 @@ impl App {
             connection_status: ConnectionStatus::Connecting,
             prompt_tx: None,
             connection_error: None,
-            pending_cwd_prompt,
+            pending_session_picker: None,
+            pending_cwd_prompt: None,
+            cwd,
+            current_cfg,
         }
     }
 }
@@ -493,9 +561,14 @@ fn render(app: &App, frame: &mut Frame) {
         frame.render_widget(List::new(items), layout[2]);
     }
 
-    // --- CWD access modal (overlays everything when present) ---
-    if let Some(cwd) = &app.pending_cwd_prompt {
-        render_cwd_modal(cwd, frame);
+    // --- Session picker (overlays everything, shown before CWD modal) ---
+    if let Some(picker) = &app.pending_session_picker {
+        render_session_picker(picker, frame);
+    }
+
+    // --- CWD access modal (overlays everything when present, after session picker) ---
+    if let Some(cwd_state) = &app.pending_cwd_prompt {
+        render_cwd_modal(&cwd_state.cwd, frame);
     }
 
     // --- Status bar ---
@@ -775,6 +848,110 @@ fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
 }
 
 // ---------------------------------------------------------------------------
+// Session picker modal
+// ---------------------------------------------------------------------------
+
+/// Renders the session picker modal, overlaying the entire terminal.
+fn render_session_picker(picker: &SessionPickerState, frame: &mut Frame) {
+    // Row 0 = "New Session" (always); subsequent rows = existing sessions (cap at 8).
+    let visible_rows = (picker.sessions.len() + 1).min(9);
+    let modal_height = (visible_rows as u16) + 5; // blank + rows + blank + hint + 2 borders
+    let modal_width = (frame.area().width * 7 / 10)
+        .max(60)
+        .min(frame.area().width);
+    let area = centered_rect(modal_width, modal_height, frame.area());
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Select Session ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(INPUT_BORDER_COLOR));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+
+    // Row 0: "New Session"
+    let sel0 = picker.selected == 0;
+    lines.push(Line::from(Span::styled(
+        format!("{}New Session", if sel0 { "> " } else { "  " }),
+        if sel0 {
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED_COLOR)
+        },
+    )));
+
+    // Rows 1..N: existing sessions
+    for (i, session) in picker.sessions.iter().enumerate().take(8) {
+        let row_idx = i + 1;
+        let is_sel = picker.selected == row_idx;
+        let cursor = if is_sel { "> " } else { "  " };
+        let date = format_session_date(session.created_at);
+        let style = if is_sel {
+            Style::default().fg(AUTOCOMPLETE_TOP_COLOR)
+        } else {
+            Style::default().fg(MUTED_COLOR)
+        };
+        let preview = if session.preview.is_empty() {
+            "(no messages yet)".to_string()
+        } else {
+            session.preview.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, style),
+            Span::styled(date, Style::default().fg(THINKING_COLOR)),
+            Span::styled("  ", style),
+            Span::styled(preview, style),
+        ]));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "[↑↓]",
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Navigate  ", Style::default().fg(MUTED_COLOR)),
+        Span::styled(
+            "[Enter]",
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Select", Style::default().fg(MUTED_COLOR)),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Formats a Unix-seconds timestamp as `YYYY-MM-DD HH:MM` without external crates.
+fn format_session_date(unix_secs: i64) -> String {
+    let secs = unix_secs.max(0);
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    // Fliegel-Van Flandern algorithm: Unix epoch = JD 2440588
+    let jd = days + 2440588;
+    let l = jd + 68569;
+    let n = 4 * l / 146097;
+    let l = l - (146097 * n + 3) / 4;
+    let year = 4000 * (l + 1) / 1461001;
+    let l = l - 1461 * year / 4 + 31;
+    let month = 80 * l / 2447;
+    let day = l - 2447 * month / 80;
+    let month = month + 2 - 12 * (month / 11);
+    let year = 100 * (n - 49) + year + month / 13;
+    format!("{year:04}-{month:02}-{day:02} {h:02}:{m:02}")
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -850,41 +1027,41 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
             debug!(tool = %t.tool_name, "tool call end");
             // For Edit calls the tool returns diff metadata; replace the
             // ToolCall placeholder that was pushed at ToolCallStart.
-            if t.tool_name == "Edit" && !t.metadata.is_empty() {
-                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&t.metadata) {
-                    let start_line =
-                        meta.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                    let parse_lines = |key: &str| -> Vec<String> {
-                        meta.get(key)
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default()
-                    };
-                    let old_lines = parse_lines("old_lines");
-                    let new_lines = parse_lines("new_lines");
+            if t.tool_name == "Edit"
+                && !t.metadata.is_empty()
+                && let Ok(meta) = serde_json::from_str::<serde_json::Value>(&t.metadata)
+            {
+                let start_line =
+                    meta.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let parse_lines = |key: &str| -> Vec<String> {
+                    meta.get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let old_lines = parse_lines("old_lines");
+                let new_lines = parse_lines("new_lines");
 
-                    for msg in app.messages.iter_mut().rev() {
-                        if let DisplayMessage::ToolCall {
-                            name,
-                            arg: file_path_opt,
-                            ..
-                        } = msg
-                        {
-                            if name == "Edit" {
-                                let file_path = file_path_opt.clone().unwrap_or_default();
-                                *msg = DisplayMessage::EditCall {
-                                    file_path,
-                                    start_line,
-                                    old_lines,
-                                    new_lines,
-                                };
-                                break;
-                            }
-                        }
+                for msg in app.messages.iter_mut().rev() {
+                    if let DisplayMessage::ToolCall {
+                        name,
+                        arg: file_path_opt,
+                        ..
+                    } = msg
+                        && name == "Edit"
+                    {
+                        let file_path = file_path_opt.clone().unwrap_or_default();
+                        *msg = DisplayMessage::EditCall {
+                            file_path,
+                            start_line,
+                            old_lines,
+                            new_lines,
+                        };
+                        break;
                     }
                 }
             }
@@ -922,7 +1099,34 @@ fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEvent) {
                 app.auto_scroll = true;
             }
         }
-        Some(ServerEvent::SessionStarted(_)) => {}
+        Some(ServerEvent::SessionStarted(s)) => {
+            if s.resumed && !s.history.is_empty() {
+                info!(session_id = %s.session_id, messages = s.history.len(), "restoring session history");
+                for h_msg in &s.history {
+                    match h_msg.role.as_str() {
+                        "user" if !h_msg.content.is_empty() => {
+                            app.messages.push(DisplayMessage::User(h_msg.content.clone()));
+                        }
+                        "assistant" => {
+                            if !h_msg.content.is_empty() {
+                                app.messages
+                                    .push(DisplayMessage::AgentText(h_msg.content.clone()));
+                            }
+                            for tc in &h_msg.tool_calls {
+                                let (name, arg) = parse_tool_call(&tc.tool_name, &tc.arguments);
+                                app.messages.push(DisplayMessage::ToolCall {
+                                    name,
+                                    arg,
+                                    output_lines: vec![],
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                app.auto_scroll = true;
+            }
+        }
         None => {}
     }
 }
@@ -995,7 +1199,7 @@ fn spawn_config_watcher(event_tx: mpsc::Sender<AppEvent>) {
 ///
 /// Returns `Ok(true)` if a session was live at some point (so the caller can
 /// decide whether a subsequent failure warrants a visible error message),
-fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
+fn to_proto_session_config(cfg: &config::ClientConfig, session_id: String) -> SessionConfig {
     use ein_proto::ein::PluginConfig as ProtoPluginConfig;
     SessionConfig {
         allowed_paths: cfg.allowed_paths.clone(),
@@ -1016,21 +1220,59 @@ fn to_proto_session_config(cfg: &config::ClientConfig) -> SessionConfig {
             })
             .collect(),
         model_client_name: cfg.model_client_name.clone(),
-        session_id: String::new(),
+        session_id,
     }
 }
 
 /// `Ok(false)` if the TUI event channel closed (TUI exited — stop retrying),
 /// or `Err` if the initial connection or handshake failed.
+///
+/// On the first connection the function calls `ListSessions`, sends a
+/// `SessionsLoaded` event to the TUI, and awaits the user's session choice via
+/// a oneshot channel before opening the bidirectional stream. On reconnects the
+/// cached `SessionConfig` is reused directly so the picker is not shown again.
 async fn try_connect(
     server_addr: &str,
-    cfg: &config::ClientConfig,
     event_tx: &mpsc::Sender<AppEvent>,
+    session_config_cache: &std::sync::Arc<tokio::sync::Mutex<Option<SessionConfig>>>,
 ) -> anyhow::Result<bool> {
     let channel = Channel::from_shared(server_addr.to_string())?
         .connect()
         .await?;
     let mut grpc_client = AgentClient::new(channel);
+
+    // Determine the SessionConfig to use for this connection.
+    let init_config = {
+        let cached = session_config_cache.lock().await.clone();
+        match cached {
+            Some(cfg) => cfg, // Reconnect: reuse the previously chosen config.
+            None => {
+                // First connection: list existing sessions and ask the user.
+                let resp = grpc_client
+                    .list_sessions(tonic::Request::new(ListSessionsRequest {}))
+                    .await?;
+                let sessions = resp.into_inner().sessions;
+
+                let (tx, rx) = oneshot::channel::<SessionConfig>();
+                if event_tx
+                    .send(AppEvent::SessionsLoaded(sessions, tx))
+                    .await
+                    .is_err()
+                {
+                    return Ok(false); // TUI exited while we were fetching
+                }
+
+                // Block until the user makes a selection (or the TUI exits).
+                match rx.await {
+                    Ok(cfg) => {
+                        *session_config_cache.lock().await = Some(cfg.clone());
+                        cfg
+                    }
+                    Err(_) => return Ok(false), // oneshot dropped — TUI exited
+                }
+            }
+        }
+    };
 
     let (prompt_tx, prompt_rx) = mpsc::channel::<UserInput>(8);
     let prompt_stream = ReceiverStream::new(prompt_rx);
@@ -1043,7 +1285,7 @@ async fn try_connect(
     // Send SessionConfig as the mandatory first message before any prompts.
     prompt_tx
         .send(UserInput {
-            input: Some(user_input::Input::Init(to_proto_session_config(&cfg))),
+            input: Some(user_input::Input::Init(init_config)),
         })
         .await?;
 
@@ -1082,11 +1324,11 @@ async fn try_connect(
 /// forwarded as `Disconnected(Some(...))` so the conversation shows a message.
 async fn connection_manager(
     server_addr: String,
-    cfg: config::ClientConfig,
     event_tx: mpsc::Sender<AppEvent>,
+    session_config_cache: std::sync::Arc<tokio::sync::Mutex<Option<SessionConfig>>>,
 ) {
     loop {
-        match try_connect(&server_addr, &cfg, &event_tx).await {
+        match try_connect(&server_addr, &event_tx, &session_config_cache).await {
             Ok(false) => return, // TUI exited — stop the task
             Ok(true) => {
                 // Session was live; try_connect already sent the Disconnected event.
@@ -1149,14 +1391,13 @@ async fn main() -> anyhow::Result<()> {
     info!(server_addr = %args.server_addr, "ein-tui starting");
 
     // Load (or create) the client config before opening the gRPC session.
-    let mut cfg = load_or_create_config()?;
+    let cfg = load_or_create_config()?;
 
     // Derive a short model name for the status bar by stripping the vendor
     // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
     let model_display = model_display_from_config(&cfg);
 
-    // Collect the cwd for the startup modal (shown before connecting) and
-    // for the welcome header in the conversation pane.
+    // Capture the cwd for the "New Session" CWD modal and the welcome header.
     let cwd_str = std::env::current_dir()
         .ok()
         .map(|p| p.display().to_string());
@@ -1167,15 +1408,18 @@ async fn main() -> anyhow::Result<()> {
     // Watch ~/.ein/config.json for changes and send ConfigChanged events.
     spawn_config_watcher(event_tx.clone());
 
-    // If there is no cwd to prompt about, spawn the connection manager immediately.
-    // Otherwise it is spawned when the modal is dismissed.
-    if cwd_str.is_none() {
-        tokio::spawn(connection_manager(
-            args.server_addr.clone(),
-            cfg.clone(),
-            event_tx.clone(),
-        ));
-    }
+    // Cache for the chosen SessionConfig; shared with the connection manager so
+    // reconnects reuse the same config without reshowing the session picker.
+    let session_config_cache: std::sync::Arc<tokio::sync::Mutex<Option<SessionConfig>>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(None));
+
+    // Spawn the connection manager immediately — the session picker is shown
+    // as part of the first connection handshake, not before it.
+    tokio::spawn(connection_manager(
+        args.server_addr.clone(),
+        event_tx.clone(),
+        session_config_cache.clone(),
+    ));
 
     // Configure the terminal for raw / alternate-screen rendering.
     enable_raw_mode()?;
@@ -1184,7 +1428,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(model_display, cwd_str, cwd_display);
+    let mut app = App::new(model_display, cwd_str, cwd_display, cfg.clone());
     let mut term_events = EventStream::new();
     // Ticker drives the thinking spinner; only app.tick is incremented when
     // the agent is busy, so the timer is cheap when idle.
@@ -1211,25 +1455,84 @@ async fn main() -> anyhow::Result<()> {
                     break;
                 }
 
-                // While the startup modal is showing, intercept Y/N and dismiss it.
+                // While the session picker is visible, route all key events to it.
+                if app.pending_session_picker.is_some() {
+                    let picker = app.pending_session_picker.as_mut().unwrap();
+                    match key.code {
+                        KeyCode::Up => {
+                            if picker.selected > 0 {
+                                picker.selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if picker.selected < picker.sessions.len() {
+                                picker.selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let state = app.pending_session_picker.take().unwrap();
+                            if state.selected == 0 {
+                                // "New Session" — build config from current settings.
+                                let base =
+                                    to_proto_session_config(&app.current_cfg, String::new());
+                                if let Some(cwd) = app.cwd.clone() {
+                                    // Show the CWD modal before sending the config.
+                                    app.pending_cwd_prompt = Some(CwdState {
+                                        cwd,
+                                        base_config: base,
+                                        session_tx: state.session_tx,
+                                    });
+                                } else {
+                                    let _ = state.session_tx.send(base);
+                                }
+                            } else {
+                                // Resume existing session using its stored config.
+                                let session = &state.sessions[state.selected - 1];
+                                let stored: StoredSessionConfig =
+                                    serde_json::from_str(&session.session_config_json)
+                                        .unwrap_or_default();
+                                let resume_cfg = SessionConfig {
+                                    allowed_paths: stored.allowed_paths,
+                                    allowed_hosts: stored.allowed_hosts,
+                                    plugin_configs: stored
+                                        .plugin_configs
+                                        .into_iter()
+                                        .map(|(k, v)| {
+                                            (
+                                                k,
+                                                ein_proto::ein::PluginConfig {
+                                                    allowed_paths: v.allowed_paths,
+                                                    allowed_hosts: v.allowed_hosts,
+                                                    params_json: v.params_json,
+                                                },
+                                            )
+                                        })
+                                        .collect(),
+                                    model_client_name: stored.model_client_name,
+                                    session_id: session.id.clone(),
+                                };
+                                let _ = state.session_tx.send(resume_cfg);
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // While the CWD modal is visible (only for new sessions), intercept Y/N.
                 if app.pending_cwd_prompt.is_some() {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Char('Y') => {
-                            let cwd = app.pending_cwd_prompt.take().unwrap();
-                            cfg.allowed_paths.push(cwd);
-                            tokio::spawn(connection_manager(
-                                args.server_addr.clone(),
-                                cfg.clone(),
-                                event_tx.clone(),
-                            ));
+                            let state = app.pending_cwd_prompt.take().unwrap();
+                            let mut config = state.base_config;
+                            config.allowed_paths.push(state.cwd);
+                            let _ = state.session_tx.send(config);
                         }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
-                            app.pending_cwd_prompt = None;
-                            tokio::spawn(connection_manager(
-                                args.server_addr.clone(),
-                                cfg.clone(),
-                                event_tx.clone(),
-                            ));
+                        KeyCode::Char('n') | KeyCode::Char('N')
+                        | KeyCode::Enter
+                        | KeyCode::Esc => {
+                            let state = app.pending_cwd_prompt.take().unwrap();
+                            let _ = state.session_tx.send(state.base_config);
                         }
                         _ => {}
                     }
@@ -1360,18 +1663,26 @@ async fn main() -> anyhow::Result<()> {
                         app.auto_scroll = true;
                     }
                     AppEvent::ConfigChanged(new_cfg) => {
-                        cfg = new_cfg.clone();
+                        app.current_cfg = new_cfg.clone();
                         app.model_display = model_display_from_config(&new_cfg);
                         info!(model = %app.model_display, "config reloaded");
                         if let Some(tx) = &app.prompt_tx {
                             let _ = tx
                                 .send(UserInput {
                                     input: Some(user_input::Input::ConfigUpdate(
-                                        to_proto_session_config(&new_cfg),
+                                        // session_id is ignored by the server on ConfigUpdate
+                                        to_proto_session_config(&new_cfg, String::new()),
                                     )),
                                 })
                                 .await;
                         }
+                    }
+                    AppEvent::SessionsLoaded(sessions, session_tx) => {
+                        app.pending_session_picker = Some(SessionPickerState {
+                            sessions,
+                            selected: 0,
+                            session_tx,
+                        });
                     }
                 }
             }

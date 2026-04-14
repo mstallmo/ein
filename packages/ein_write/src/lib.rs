@@ -51,10 +51,10 @@ impl ToolPlugin for WriteTool {
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: WriteArgs = serde_json::from_str(args)?;
 
-        if let Some(parent) = std::path::Path::new(&args.file_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(&args.file_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
 
         let mut file = fs::OpenOptions::new()

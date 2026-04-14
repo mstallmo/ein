@@ -57,6 +57,42 @@ impl From<&ein_proto::ein::PluginConfig> for PluginConfigRecord {
     }
 }
 
+/// A lightweight summary of a persisted session, returned by [`SessionStore::list_sessions`].
+pub struct SessionSummaryData {
+    pub id: String,
+    pub created_at: i64,
+    /// First user message in the session, truncated to 80 chars (empty if none yet).
+    pub preview: String,
+    /// The raw JSON stored at session creation; used by the TUI to reconstruct
+    /// the original `SessionConfig` when resuming.
+    pub session_config_json: String,
+}
+
+/// Deserialises the messages JSON and returns the content of the first user
+/// message, truncated to 80 chars. Returns an empty string when there are no
+/// user messages yet.
+fn extract_preview(messages_json: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct Partial {
+        role: String,
+        content: Option<String>,
+    }
+
+    let messages: Vec<Partial> = serde_json::from_str(messages_json).unwrap_or_default();
+    messages
+        .into_iter()
+        .find(|m| m.role == "user")
+        .and_then(|m| m.content)
+        .map(|c| {
+            let mut s: String = c.chars().take(80).collect();
+            if c.chars().count() > 80 {
+                s.push('…');
+            }
+            s
+        })
+        .unwrap_or_default()
+}
+
 /// Async SQLite session store backed by a connection pool.
 pub struct SessionStore {
     pool: SqlitePool,
@@ -153,6 +189,27 @@ impl SessionStore {
                 Ok(Some(messages))
             }
         }
+    }
+
+    /// Return a summary of all sessions, ordered newest-first.
+    pub async fn list_sessions(&self) -> Result<Vec<SessionSummaryData>> {
+        let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT id, created_at, messages_json, session_config_json
+             FROM sessions ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("listing sessions")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, created_at, messages_json, session_config_json)| SessionSummaryData {
+                id,
+                created_at,
+                preview: extract_preview(&messages_json),
+                session_config_json,
+            })
+            .collect())
     }
 
     /// Overwrite the stored message history for an existing session.

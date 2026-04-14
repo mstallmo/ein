@@ -79,10 +79,10 @@ impl From<&Message> for AnthropicMessage {
             Role::Assistant => {
                 let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
 
-                if let Some(text) = &msg.content {
-                    if !text.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text { text: text.clone() });
-                    }
+                if let Some(text) = &msg.content
+                    && !text.is_empty()
+                {
+                    blocks.push(AnthropicContentBlock::Text { text: text.clone() });
                 }
 
                 if let Some(tool_calls) = &msg.tool_calls {
