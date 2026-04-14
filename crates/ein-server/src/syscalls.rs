@@ -24,7 +24,7 @@ impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
 
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let chunk_tx = self.chunk_tx.clone();
+        let chunk_handler = self.chunk_handler.clone();
         let tool_call_id = self.tool_call_id.clone();
 
         let mut stdout_lines = BufReader::new(stdout).lines();
@@ -39,13 +39,16 @@ impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
                     Ok(Some(l)) => {
                         stdout_buf.push_str(&l);
                         stdout_buf.push('\n');
-                        if let Some(tx) = &chunk_tx {
-                            let _ = tx.send(Ok(AgentEvent {
-                                event: Some(Event::ToolOutputChunk(ToolOutputChunk {
-                                    tool_call_id: tool_call_id.clone(),
-                                    output: l,
-                                })),
-                            })).await;
+
+                        if let Some(handler) = &chunk_handler {
+                            handler(AgentEvent {
+                                event: Some(Event::ToolOutputChunk(
+                                    ToolOutputChunk {
+                                        tool_call_id: tool_call_id.clone(),
+                                        output: l,
+                                    }
+                                )),
+                            }).await;
                         }
                     }
                     _ => stdout_done = true,

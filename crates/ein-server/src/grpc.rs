@@ -29,13 +29,13 @@ use wasmtime::Engine;
 use wasmtime::component::Linker;
 
 use crate::HarnessState;
-use crate::agent::run_agent;
+use crate::agent::Agent;
 use crate::model_client::ModelClientSessionManager;
 use crate::tools::{ToolRegistry, build_tool_linker};
 use ein_proto::ein::{
     AgentError, AgentEvent, HistoryMessage, HistoryToolCall, ListSessionsRequest,
     ListSessionsResponse, SessionStarted, SessionSummary, UserInput, agent_event::Event,
-    agent_server::Agent, user_input,
+    agent_server::Agent as AgentService, user_input,
 };
 
 /// gRPC service struct.
@@ -79,7 +79,7 @@ impl AgentServer {
 }
 
 #[tonic::async_trait]
-impl Agent for AgentServer {
+impl AgentService for AgentServer {
     type AgentSessionStream = ReceiverStream<Result<AgentEvent, Status>>;
 
     async fn list_sessions(
@@ -251,6 +251,16 @@ impl Agent for AgentServer {
 
             println!("[session] plugins loaded");
 
+            let tx_clone = tx.clone();
+            let agent = Agent::builder()
+                .with_event_handler(move |event| {
+                    let tx = tx_clone.clone();
+                    async move {
+                        let _ = tx.send(Ok(event)).await;
+                    }
+                })
+                .build();
+
             // --- Phase 4: prompt loop ---
             // Restore history if resuming; otherwise start fresh with an optional system message.
             let mut messages: Vec<Message> = if is_resumed {
@@ -312,7 +322,8 @@ impl Agent for AgentServer {
                                 .iter()
                                 .map(|tc| match tc {
                                     ein_plugin::model_client::ToolCall::Function {
-                                        function, ..
+                                        function,
+                                        ..
                                     } => HistoryToolCall {
                                         tool_name: function.name.clone(),
                                         arguments: function.arguments.clone(),
@@ -355,8 +366,9 @@ impl Agent for AgentServer {
                             tool_call_id: None,
                         });
 
-                        if let Err(e) =
-                            run_agent(&mut messages, &mut registry, &mut model_session, &tx).await
+                        if let Err(e) = agent
+                            .run(&mut messages, &mut registry, &mut model_session)
+                            .await
                         {
                             eprintln!("[session] agent error: {e}");
                             let _ = tx.send(Err(Status::internal(e.to_string()))).await;

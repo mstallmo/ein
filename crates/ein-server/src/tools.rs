@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use crate::{HarnessState, bindings::Plugin};
 use ein_plugin::{
     model_client::Tool,
     tool::{ToolDef, ToolResult},
 };
-use ein_proto::ein::{AgentEvent, PluginConfig};
+use ein_proto::ein::PluginConfig;
+use tokio::fs;
+use wasmtime::{Engine, Store, component::*};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
+
 use std::{
     collections::{self, HashMap},
     net::IpAddr,
     path::Path,
     sync::Arc,
 };
-use tokio::{fs, sync::mpsc};
-use tonic::Status;
-use wasmtime::{Engine, Store, component::*};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
+
+use crate::{AgentEventHandler, HarnessState, bindings::Plugin};
 
 pub struct WasmTool {
     // Static values that don't change during tool execution
@@ -88,7 +89,7 @@ impl WasmTool {
             crate::HarnessState {
                 wasi_ctx: wasi,
                 resource_table: ResourceTable::new(),
-                chunk_tx: None,
+                chunk_handler: None,
                 tool_call_id: String::new(),
             },
         );
@@ -137,13 +138,9 @@ impl WasmTool {
 
     /// Injects the gRPC event sender and tool call ID into the store so the
     /// `spawn` host syscall can stream stdout lines as `ToolOutputChunk` events.
-    pub fn set_chunk_sender(
-        &mut self,
-        tx: mpsc::Sender<Result<AgentEvent, Status>>,
-        tool_call_id: String,
-    ) {
+    pub fn set_chunk_sender(&mut self, handler: AgentEventHandler, tool_call_id: String) {
         let state = self.store.data_mut();
-        state.chunk_tx = Some(tx);
+        state.chunk_handler = Some(handler);
         state.tool_call_id = tool_call_id;
     }
 
