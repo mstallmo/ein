@@ -173,7 +173,7 @@ impl From<&tool::ToolFuncProps> for ToolFuncProps {
     fn from(tool: &tool::ToolFuncProps) -> Self {
         Self(
             tool.props()
-                .into_iter()
+                .iter()
                 .map(|(k, v)| (k.to_owned(), v.into()))
                 .collect::<collections::HashMap<String, ToolFuncPropInfo>>(),
         )

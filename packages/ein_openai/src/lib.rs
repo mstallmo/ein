@@ -23,8 +23,8 @@ use serde::Deserialize;
 fn map_http_error(status: u16, body: &str) -> Option<anyhow::Error> {
     match status {
         401 => {
-            let msg = extract_api_error(body)
-                .unwrap_or_else(|| "Invalid or missing API key".to_owned());
+            let msg =
+                extract_api_error(body).unwrap_or_else(|| "Invalid or missing API key".to_owned());
             Some(anyhow!(
                 "{msg}\n\n\
                  Set your api_key in ~/.ein/config.json under \
@@ -93,26 +93,22 @@ impl ModelClientPlugin for OpenAIPlugin {
         );
 
         // CompletionRequest field names already match the OpenAI wire format.
-        let mut req_builder = HttpRequest::post(url)
-            .bearer_auth(&self.config.api_key);
+        let mut req_builder = HttpRequest::post(url).bearer_auth(&self.config.api_key);
 
         if let Some(org) = &self.config.organization {
             req_builder = req_builder.header("OpenAI-Organization", org);
         }
 
-        let resp = req_builder
-            .json(&req)?
-            .send()
-            .map_err(|e| {
-                if e.is::<RequestDeniedError>() {
-                    anyhow!(
-                        "Request blocked by host allowlist.\n\
+        let resp = req_builder.json(&req)?.send().map_err(|e| {
+            if e.is::<RequestDeniedError>() {
+                anyhow!(
+                    "Request blocked by host allowlist.\n\
                          Add the OpenAI host to allowed_hosts in ~/.ein/config.json."
-                    )
-                } else {
-                    anyhow!("Failed to connect to OpenAI API: {e}")
-                }
-            })?;
+                )
+            } else {
+                anyhow!("Failed to connect to OpenAI API: {e}")
+            }
+        })?;
 
         if let Some(e) = map_http_error(resp.status, &resp.body) {
             return Err(e);
@@ -175,8 +171,7 @@ mod tests {
 
     #[test]
     fn test_config_defaults() {
-        let cfg: OpenAIConfig =
-            serde_json::from_value(json!({"api_key": "sk-test"})).unwrap();
+        let cfg: OpenAIConfig = serde_json::from_value(json!({"api_key": "sk-test"})).unwrap();
         assert_eq!(cfg.api_key, "sk-test");
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
         assert!(cfg.organization.is_none());
@@ -239,14 +234,20 @@ mod tests {
     fn test_map_http_error_500() {
         let err = map_http_error(500, "{}").unwrap();
         let msg = err.to_string();
-        assert!(msg.contains("service error"), "expected service error in: {msg}");
+        assert!(
+            msg.contains("service error"),
+            "expected service error in: {msg}"
+        );
     }
 
     #[test]
     fn test_map_http_error_503() {
         let err = map_http_error(503, "{}").unwrap();
         let msg = err.to_string();
-        assert!(msg.contains("service error"), "expected service error in: {msg}");
+        assert!(
+            msg.contains("service error"),
+            "expected service error in: {msg}"
+        );
     }
 
     #[test]

@@ -29,6 +29,7 @@ mod bindings;
 mod grpc;
 mod model_client;
 mod model_client_bindings;
+mod persistence;
 mod syscalls;
 mod tools;
 
@@ -141,12 +142,12 @@ impl wasmtime_wasi_http::WasiHttpView for ModelClientHarnessState {
 /// Top-level runtime configuration for the Ein server.
 #[derive(Debug, Clone)]
 pub struct EinConfig {
-    #[expect(unused)]
-    ein_dir: PathBuf,
     /// Directory from which tool `.wasm` plugin files are loaded.
     pub plugin_dir: PathBuf,
     /// Directory from which model client `.wasm` plugin files are loaded.
     pub model_client_dir: PathBuf,
+    /// Path to the SQLite session database.
+    pub db_path: PathBuf,
 }
 
 impl Default for EinConfig {
@@ -168,9 +169,9 @@ impl Default for EinConfig {
         };
 
         Self {
-            ein_dir,
             plugin_dir,
             model_client_dir,
+            db_path: ein_dir.join("sessions.db"),
         }
     }
 }

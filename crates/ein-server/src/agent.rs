@@ -71,7 +71,7 @@ const MAX_TOOL_RESULT_CHARS: usize = 2000;
 /// - its `role` is `"tool"`
 /// - it is more than `KEEP_RECENT_MESSAGES` positions from the end of `messages`
 /// - its `content` length exceeds `MAX_TOOL_RESULT_CHARS`
-fn truncate_old_tool_results(messages: &mut Vec<Message>) {
+fn truncate_old_tool_results(messages: &mut [Message]) {
     let len = messages.len();
     let truncate_before = len.saturating_sub(KEEP_RECENT_MESSAGES);
 
