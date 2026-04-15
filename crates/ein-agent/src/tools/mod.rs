@@ -15,7 +15,7 @@ use std::collections;
 pub trait AsyncTool {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolDef;
-    async fn call(&self) -> anyhow::Result<ToolResult>;
+    async fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
 }
 
 #[derive(Debug, Clone)]

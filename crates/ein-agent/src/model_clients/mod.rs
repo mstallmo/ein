@@ -90,8 +90,7 @@ pub struct FunctionCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
-    pub prompt_tokens: i32,
-    pub completion_tokens: i32,
-    #[allow(dead_code)]
-    pub total_tokens: i32,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
 }

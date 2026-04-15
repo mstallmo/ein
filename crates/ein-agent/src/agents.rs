@@ -4,10 +4,8 @@
 use futures::future::BoxFuture;
 use tracing::{error, info};
 
-// use crate::model_client::ModelClientSession;
-// use crate::tools::ToolRegistry;
-use crate::errors::AgentError;
-use crate::model_clients::{FinishReason, Message, ModelClient, Role};
+use crate::errors::{AgentError, ToolError};
+use crate::model_clients::{FinishReason, FunctionCall, Message, ModelClient, Role, ToolCall};
 use crate::tools::AsyncTool;
 
 use std::collections;
@@ -39,8 +37,27 @@ const MAX_TOOL_RESULT_CHARS: usize = 2000;
 
 pub type AgentResult<T> = Result<T, AgentError>;
 
-// TODO: Fill out impl
-pub enum AgentEvent {}
+pub type ToolResult<T> = Result<T, ToolError>;
+
+pub enum AgentEvent {
+    ContentDelta(String),
+    TokenUsage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+    },
+    ToolCallStart {
+        tool_call_id: String,
+        tool_name: String,
+        arguments: String,
+    },
+    ToolCallEnd {
+        tool_call_id: String,
+        tool_name: String,
+        result: String,
+        metadata: String,
+    },
+}
 
 pub type AgentEventHandler = Arc<Box<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + Send + Sync>>;
 
@@ -135,12 +152,8 @@ impl Agent {
     /// results) is written back into `messages` in place so the caller's
     /// conversation state stays current.
     pub async fn run(&mut self, prompt: Message) -> AgentResult<Message> {
-        let mut cumulative_prompt = 0i32;
-        let mut cumulative_completion = 0i32;
-        // Count consecutive empty-stop turns so we can nudge the model when it
-        // produces thinking tokens but no output, and bail out if it keeps failing.
-        let mut empty_stop_retries = 0u32;
-        const MAX_EMPTY_STOP_RETRIES: u32 = 1;
+        let mut cumulative_prompt = 0;
+        let mut cumulative_completion = 0;
         self.messages.push(prompt);
 
         loop {
@@ -182,12 +195,12 @@ impl Agent {
                 cumulative_prompt += usage.prompt_tokens;
                 cumulative_completion += usage.completion_tokens;
 
-                // self.broadcast_event(Event::TokenUsage(TokenUsage {
-                //     prompt_tokens: cumulative_prompt,
-                //     completion_tokens: cumulative_completion,
-                //     total_tokens: cumulative_prompt + cumulative_completion,
-                // }))
-                // .await;
+                self.broadcast_event(AgentEvent::TokenUsage {
+                    prompt_tokens: cumulative_prompt,
+                    completion_tokens: cumulative_completion,
+                    total_tokens: cumulative_prompt + cumulative_completion,
+                })
+                .await;
             }
 
             let choice = resp
@@ -198,24 +211,6 @@ impl Agent {
                     "Response contained no choices".to_string(),
                 ))?;
 
-            let content = choice
-                .message
-                .content
-                .as_deref()
-                .unwrap_or_default()
-                .to_string();
-
-            // Some models (e.g. gemma via Ollama) emit finish_reason="stop" even
-            // when they include tool calls in the response.  Normalise: if the
-            // message carries tool calls, treat it as ToolCalls regardless of the
-            // finish_reason field.
-            let has_tool_calls = choice
-                .message
-                .tool_calls
-                .as_ref()
-                .map(|tc| !tc.is_empty())
-                .unwrap_or(false);
-
             // Clone tool_calls before moving the message so we can iterate
             // over them later while also pushing to messages.
             let tool_calls = choice.message.tool_calls.clone();
@@ -223,75 +218,60 @@ impl Agent {
             // Append the assistant's reply to the running history immediately so
             // tool results added in the same iteration are correctly sequenced.
             self.messages.push(choice.message.clone());
-            let effective_finish = if has_tool_calls {
-                FinishReason::ToolCalls
-            } else {
-                choice.finish_reason
-            };
 
-            info!(
-                "[agent] finish_reason={:?} (effective={:?})",
-                choice.finish_reason, effective_finish
-            );
+            info!("[agent] finish_reason={:?}", choice.finish_reason);
 
-            match effective_finish {
+            match choice.finish_reason {
+                FinishReason::Stop => return Ok(choice.message),
                 FinishReason::ToolCalls => {
                     // Stream any accompanying text before executing tools.
                     if let Some(content) = &choice.message.content
                         && !content.is_empty()
                     {
-                        // self.broadcast_event(Event::ContentDelta(ContentDelta { text: content }))
-                        //     .await;
+                        self.broadcast_event(AgentEvent::ContentDelta(content.to_owned()))
+                            .await;
                     }
 
-                    // if let Some(tool_calls) = &tool_calls {
-                    //     for tool_call in tool_calls {
-                    //         match tool_call {
-                    //             ToolCall::Function { id, function, .. } => {
-                    //                 println!("[agent] tool call: {} (id={})", function.name, id);
+                    if let Some(tool_calls) = &tool_calls {
+                        for tool_call in tool_calls {
+                            match tool_call {
+                                ToolCall::Function { id, function, .. } => {
+                                    info!("[agent] tool call: {} (id={})", function.name, id);
 
-                    //                 // Notify the client that a tool is starting.
-                    //                 self.broadcast_event(Event::ToolCallStart(ToolCallStart {
-                    //                     tool_call_id: id.clone(),
-                    //                     tool_name: function.name.clone(),
-                    //                     arguments: function.arguments.clone(),
-                    //                 }))
-                    //                 .await;
+                                    // Notify the client that a tool is starting.
+                                    self.broadcast_event(AgentEvent::ToolCallStart {
+                                        tool_call_id: id.clone(),
+                                        tool_name: function.name.clone(),
+                                        arguments: function.arguments.clone(),
+                                    })
+                                    .await;
 
-                    //                 let (result_str, metadata) = ("test", "test");
-                    //                 // let (result_str, metadata) =
-                    //                 //     self.handle_tool_call(tool_registry, id, function).await;
+                                    let (result_str, metadata) =
+                                        self.handle_tool_call(id, function).await?;
 
-                    //                 // Notify the client that the tool finished.
-                    //                 self.broadcast_event(Event::ToolCallEnd(ToolCallEnd {
-                    //                     tool_call_id: id.clone(),
-                    //                     tool_name: function.name.clone(),
-                    //                     result: result_str.clone(),
-                    //                     metadata,
-                    //                 }))
-                    //                 .await;
+                                    // Notify the client that the tool finished.
+                                    self.broadcast_event(AgentEvent::ToolCallEnd {
+                                        tool_call_id: id.clone(),
+                                        tool_name: function.name.clone(),
+                                        result: result_str.clone(),
+                                        metadata,
+                                    })
+                                    .await;
 
-                    //                 // Append the tool result so the LLM sees it on
-                    //                 // the next iteration.
-                    //                 messages.push(Message {
-                    //                     role: Role::Tool,
-                    //                     content: Some(result_str),
-                    //                     tool_call_id: Some(id.clone()),
-                    //                     tool_calls: None,
-                    //                 });
-                    //             }
-                    //         }
-                    //     }
-                    // }
+                                    // Append the tool result so the LLM sees it on
+                                    // the next iteration.
+                                    self.messages.push(Message {
+                                        role: Role::Tool,
+                                        content: Some(result_str),
+                                        tool_call_id: Some(id.clone()),
+                                        tool_calls: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
 
                     // Loop: send the updated history back to the LLM.
-                }
-                FinishReason::Stop => {
-                    // self.broadcast_event(Event::AgentFinished(AgentFinished {
-                    //     final_content: content,
-                    // }))
-                    // .await;
-                    return Ok(choice.message);
                 }
                 FinishReason::Unsupported => {
                     let error_msg = "The model stopped with an unsupported finish reason. \
@@ -300,10 +280,6 @@ impl Agent {
                                                     (e.g. anthropic/claude-haiku-4-5) by setting `model` \
                                                     in ~/.ein/config.json."
                                                 .to_string();
-                    // self.broadcast_event(Event::AgentError(AgentError {
-                    //     message: error_msg,
-                    // }))
-                    // .await;
 
                     return Err(AgentError::UnsupportedFinishReason(error_msg));
                 }
@@ -361,76 +337,73 @@ impl Agent {
         }
     }
 
-    // TODO: Cleanup error/success handling here
-    // async fn handle_tool_call(
-    //     &self,
-    //     tool_registry: &mut ToolRegistry,
-    //     id: &str,
-    //     function: &FunctionCall,
-    // ) -> (String, String) {
-    //     match tool_registry.get(function.name.as_str()) {
-    //         Some(tool) => {
-    //             match tool.enable_chunk_sender().await {
-    //                 Ok(should_enable_chunk_sender) => {
-    //                     if should_enable_chunk_sender && let Some(handler) = &self.event_handler {
-    //                         tool.set_chunk_sender(handler.clone(), id.to_owned())
-    //                     }
-    //                 }
-    //                 Err(err) => {
-    //                     eprintln!("[agent] tool '{}' error: {err}", function.name);
+    async fn handle_tool_call(
+        &self,
+        id: &str,
+        function: &FunctionCall,
+    ) -> ToolResult<(String, String)> {
+        match self.async_tools.get(function.name.as_str()) {
+            Some(tool) => {
+                // TODO: Move to `ein-server` specific tool registry impl
+                // match tool.enable_chunk_sender().await {
+                //     Ok(should_enable_chunk_sender) => {
+                //         if should_enable_chunk_sender && let Some(handler) = &self.event_handler {
+                //             tool.set_chunk_sender(handler.clone(), id.to_owned())
+                //         }
+                //     }
+                //     Err(err) => {
+                //         eprintln!("[agent] tool '{}' error: {err}", function.name);
 
-    //                     return (format!("Error: {err}"), String::new());
-    //                 }
-    //             };
+                //         return (format!("Error: {err}"), String::new());
+                //     }
+                // };
 
-    //             match tool.call(id, &function.arguments).await {
-    //                 Ok(res) => {
-    //                     let meta = res
-    //                         .metadata
-    //                         .as_ref()
-    //                         .map(|v| v.to_string())
-    //                         .unwrap_or_default();
+                let res = tool
+                    .call(id, &function.arguments)
+                    .await
+                    .or_else(|err| Err(ToolError::Execution(format!("{err}"))))?;
 
-    //                     (res.content, meta)
-    //                 }
-    //                 Err(e) => {
-    //                     eprintln!("[agent] tool '{}' error: {e}", function.name);
+                let meta = res
+                    .metadata
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
 
-    //                     (format!("Error: {e}"), String::new())
-    //                 }
-    //             }
-    //         }
-    //         None => {
-    //             eprintln!("[agent] unknown tool '{}'", function.name);
+                Ok((res.content, meta))
+            }
+            None => {
+                error!("[agent] unknown tool '{}'", function.name);
 
-    //             (
-    //                 format!("Error: tool '{}' not found", function.name),
-    //                 String::new(),
-    //             )
-    //         }
-    //     }
-    // }
+                Err(ToolError::Unknown(function.name.clone()))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use async_trait::async_trait;
 
     use super::*;
-    use crate::model_clients::{Choice, CompletionResponse};
+    use crate::{
+        model_clients::{Choice, CompletionResponse},
+        tools::{ToolDef, ToolResult},
+    };
 
-    struct TestModelClient {
+    struct BasicTestModelClient {
         response: CompletionResponse,
     }
 
     #[async_trait]
-    impl ModelClient for TestModelClient {
+    impl ModelClient for BasicTestModelClient {
         async fn complete(&self, _messages: &[Message]) -> anyhow::Result<CompletionResponse> {
             Ok(self.response.clone())
         }
     }
 
-    fn default_test_client() -> TestModelClient {
+    fn basic_test_client() -> BasicTestModelClient {
         let res = CompletionResponse {
             choices: vec![Choice {
                 index: None,
@@ -446,12 +419,83 @@ mod tests {
             error: None,
         };
 
-        TestModelClient { response: res }
+        BasicTestModelClient { response: res }
+    }
+
+    struct ToolTestModelClient {
+        call_counter: Mutex<u8>,
+        tool_response: CompletionResponse,
+        finish_response: CompletionResponse,
+    }
+
+    impl ToolTestModelClient {
+        fn new(tool_response: CompletionResponse, finish_response: CompletionResponse) -> Self {
+            Self {
+                call_counter: Mutex::new(0),
+                tool_response,
+                finish_response,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ModelClient for ToolTestModelClient {
+        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<CompletionResponse> {
+            let mut call_counter = self.call_counter.lock().unwrap();
+            if *call_counter == 0 {
+                *call_counter += 1;
+
+                Ok(self.tool_response.clone())
+            } else {
+                Ok(self.finish_response.clone())
+            }
+        }
+    }
+
+    fn tool_test_client() -> ToolTestModelClient {
+        let tool_res = CompletionResponse {
+            choices: vec![Choice {
+                index: None,
+                finish_reason: FinishReason::ToolCalls,
+                message: Message {
+                    role: Role::Tool,
+                    content: None,
+                    tool_calls: Some(vec![ToolCall::Function {
+                        id: "tool_id".to_string(),
+                        index: 0,
+                        function: FunctionCall {
+                            name: "test_tool".to_string(),
+                            arguments: "{\"test_arg\": \"test_val\"}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: Some("tool_call_id".to_string()),
+                },
+            }],
+            usage: None,
+            error: None,
+        };
+
+        let finish_res = CompletionResponse {
+            choices: vec![Choice {
+                index: None,
+                finish_reason: FinishReason::Stop,
+                message: Message {
+                    role: Role::Assistant,
+                    content: Some("assistant response".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            }],
+            usage: None,
+            error: None,
+        };
+
+        ToolTestModelClient::new(tool_res, finish_res)
     }
 
     #[tokio::test]
-    async fn test_run_agent() {
-        let model_client = default_test_client();
+    async fn test_basic_agent() {
+        let model_client = basic_test_client();
         let mut agent = Agent::builder(model_client).build();
 
         let message = Message {
@@ -464,5 +508,64 @@ mod tests {
         let res = agent.run(message).await.unwrap();
         assert_eq!(res.role, Role::Assistant);
         assert_eq!(res.content, Some("assistant response".to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_tool_calling_agent() {
+        use std::sync::Arc;
+
+        #[derive(Clone)]
+        struct TestTool {
+            called_arg: Arc<Mutex<String>>,
+        }
+
+        impl TestTool {
+            fn new() -> Self {
+                Self {
+                    called_arg: Arc::new(Mutex::new(String::new())),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl AsyncTool for TestTool {
+            fn name(&self) -> &str {
+                "test_tool"
+            }
+
+            fn schema(&self) -> ToolDef {
+                ToolDef::function(self.name(), "Tool for testing library agent tool calling")
+                    .param("test_arg", "string", "Test agument passing", true)
+                    .build()
+            }
+
+            async fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+                let args: serde_json::Value = serde_json::from_str(args)?;
+
+                if let Some(test_arg) = args["test_arg"].as_str() {
+                    let mut guard = self.called_arg.lock().unwrap();
+                    *guard = test_arg.to_string();
+                }
+
+                Ok(ToolResult::new(id, "tool result".to_string()))
+            }
+        }
+
+        let model_client = tool_test_client();
+        let tool = TestTool::new();
+        let mut agent = Agent::builder(model_client)
+            .add_async_tool(tool.clone())
+            .build();
+
+        let message = Message {
+            role: Role::User,
+            content: Some("user message".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        let _ = agent.run(message).await.unwrap();
+
+        assert_eq!(*tool.called_arg.lock().unwrap(), "test_val".to_string());
     }
 }
