@@ -919,6 +919,7 @@ dependencies = [
  "async-trait",
  "clap",
  "dirs",
+ "ein-agent",
  "ein-proto",
  "ein_plugin",
  "futures",

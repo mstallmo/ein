@@ -78,6 +78,7 @@ pub trait ConstructableToolPlugin: ToolPlugin {
     fn new() -> Self;
 }
 
+// WASM plugin for Ein implementation detail
 pub trait ToolPlugin: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolDef;
