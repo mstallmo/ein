@@ -4,6 +4,7 @@ members = [
     "crates/ein-tui",
     "crates/ein-proto",
     "crates/ein-agent",
+    "crates/ein-core",
     "packages/*",
 ]
 default-members = [
@@ -11,6 +12,7 @@ default-members = [
     "crates/ein-tui",
     "crates/ein-proto",
     "crates/ein-agent",
+    "crates/ein-core",
 ]
 resolver = "2"
 

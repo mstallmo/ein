@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
+use ein_core::types::{FinishReason, FunctionCall, Message, Role, ToolCall};
 use futures::future::BoxFuture;
 use tracing::{error, info};
 
 use crate::errors::{AgentError, ToolError};
-use crate::model_clients::{FinishReason, FunctionCall, Message, ModelClient, Role, ToolCall};
+use crate::model_clients::ModelClient;
 use crate::tools::{DefaultToolSet, Tool, ToolSet};
 
 use std::sync::Arc;
@@ -396,12 +397,9 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use ein_core::types::{Choice, CompletionResponse, ToolDef, ToolResult};
 
     use super::*;
-    use crate::{
-        model_clients::{Choice, CompletionResponse},
-        tools::{ToolDef, ToolResult},
-    };
 
     struct BasicTestModelClient {
         response: CompletionResponse,

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use ein_plugin::{
-    model_client::Tool,
-    tool::{ToolDef, ToolResult},
+use ein_agent::{
+    async_trait,
+    tools::{ToolDef, ToolResult, ToolSet},
 };
 use ein_proto::ein::PluginConfig;
 use tokio::fs;
@@ -20,10 +20,8 @@ use std::{
 use crate::{AgentEventHandler, HarnessState, bindings::Plugin};
 
 pub struct WasmTool {
-    // Static values that don't change during tool execution
     name: String,
-    schema: ToolDef, // Would be better if this was strongly typed
-    // Mutable state for `call`
+    schema: ToolDef,
     store: Store<crate::HarnessState>,
     bindings: Plugin,
     handle: ResourceAny,
@@ -113,7 +111,6 @@ impl WasmTool {
 
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
         self.handle.resource_drop_async(&mut self.store).await?;
-
         Ok(())
     }
 
@@ -126,14 +123,12 @@ impl WasmTool {
     }
 
     pub async fn enable_chunk_sender(&mut self) -> anyhow::Result<bool> {
-        let res = self
-            .bindings
+        self.bindings
             .tool()
             .tool()
             .call_enable_chunk_sender(&mut self.store, self.handle)
-            .await?;
-
-        Ok(res)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     /// Injects the gRPC event sender and tool call ID into the store so the
@@ -157,9 +152,9 @@ impl WasmTool {
     }
 }
 
-pub struct ToolRegistry(collections::HashMap<String, WasmTool>);
+pub struct WasmToolSet(collections::HashMap<String, WasmTool>);
 
-impl ToolRegistry {
+impl WasmToolSet {
     fn new() -> Self {
         Self(collections::HashMap::new())
     }
@@ -241,18 +236,32 @@ impl ToolRegistry {
         self.0.insert(tool.name().to_string(), tool);
     }
 
-    pub fn schemas(&self) -> Vec<Tool> {
-        self.0
-            .values()
-            .map(|tool| tool.schema().into())
-            .collect::<Vec<Tool>>()
-    }
-
     pub fn get(&mut self, name: &str) -> Option<&mut WasmTool> {
         self.0.get_mut(name)
     }
 
-    pub async fn unload(mut self) {
+    pub fn schemas(&self) -> Vec<ToolDef> {
+        self.0
+            .values()
+            .map(|tool| tool.schema().to_owned())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ToolSet for WasmToolSet {
+    fn schemas(&self) -> Vec<ToolDef> {
+        self.schemas()
+    }
+
+    async fn call_tool(&mut self, name: &str, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+        match self.0.get_mut(name) {
+            Some(tool) => tool.call(id, args).await,
+            None => Err(anyhow::anyhow!("tool not found: {name}")),
+        }
+    }
+
+    async fn unload(mut self) {
         for (name, tool) in self.0.drain() {
             if let Err(err) = tool.cleanup().await {
                 eprintln!("Failed to cleanup tool {name}: {err}");

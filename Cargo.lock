@@ -894,12 +894,21 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ein-core",
  "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ein-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1039,6 +1048,7 @@ name = "ein_plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ein-core",
  "ein_http",
  "serde",
  "serde_json",

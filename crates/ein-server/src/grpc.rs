@@ -21,6 +21,7 @@
 use std::mem;
 use std::sync::Arc;
 
+use ein_agent::tools::ToolSet;
 use ein_plugin::model_client::{Message, Role};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -31,7 +32,7 @@ use wasmtime::component::Linker;
 use crate::HarnessState;
 use crate::agent::Agent;
 use crate::model_client::ModelClientSessionManager;
-use crate::tools::{ToolRegistry, build_tool_linker};
+use crate::tools::{WasmToolSet, build_tool_linker};
 use ein_proto::ein::{
     AgentError, AgentEvent, HistoryMessage, HistoryToolCall, ListSessionsRequest,
     ListSessionsResponse, SessionStarted, SessionSummary, UserInput, agent_event::Event,
@@ -228,7 +229,7 @@ impl AgentService for AgentServer {
                 "[session] loading plugins from {}",
                 config.plugin_dir.display()
             );
-            let mut registry = match ToolRegistry::load(
+            let mut tool_set = match WasmToolSet::load(
                 &engine,
                 &tool_linker,
                 &config.plugin_dir,
@@ -367,7 +368,7 @@ impl AgentService for AgentServer {
                         });
 
                         if let Err(e) = agent
-                            .run(&mut messages, &mut registry, &mut model_session)
+                            .run(&mut messages, &mut tool_set, &mut model_session)
                             .await
                         {
                             eprintln!("[session] agent error: {e}");
@@ -423,7 +424,7 @@ impl AgentService for AgentServer {
             if let Err(err) = model_session.cleanup().await {
                 eprintln!("[session] Failed to cleanup model client {err}");
             }
-            registry.unload().await;
+            tool_set.unload().await;
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))

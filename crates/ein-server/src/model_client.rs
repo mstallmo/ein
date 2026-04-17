@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{CompletionRequest, CompletionResponse, Message, Tool};
+use ein_agent::model_clients::{CompletionRequest, CompletionResponse, Message, ToolDef};
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -177,7 +177,7 @@ impl ModelClientSession {
     pub async fn complete(
         &mut self,
         messages: &[Message],
-        tools: &[Tool],
+        tools: &[ToolDef],
     ) -> anyhow::Result<CompletionResponse> {
         let req = CompletionRequest {
             model: self.params.model.clone(),

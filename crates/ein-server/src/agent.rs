@@ -38,7 +38,7 @@ use ein_proto::ein::{
 use futures::future::BoxFuture;
 
 use crate::model_client::ModelClientSession;
-use crate::tools::ToolRegistry;
+use crate::tools::WasmToolSet;
 
 use std::sync::Arc;
 
@@ -142,11 +142,11 @@ impl Agent {
     pub async fn run(
         &self,
         messages: &mut Vec<Message>,
-        tool_registry: &mut ToolRegistry,
+        tool_registry: &mut WasmToolSet,
         model_session: &mut ModelClientSession,
     ) -> anyhow::Result<()> {
-        let mut cumulative_prompt = 0i32;
-        let mut cumulative_completion = 0i32;
+        let mut cumulative_prompt = 0u32;
+        let mut cumulative_completion = 0u32;
         // Count consecutive empty-stop turns so we can nudge the model when it
         // produces thinking tokens but no output, and bail out if it keeps failing.
         let mut empty_stop_retries = 0u32;
@@ -205,9 +205,9 @@ impl Agent {
                 cumulative_completion += usage.completion_tokens;
 
                 self.broadcast_event(Event::TokenUsage(TokenUsage {
-                    prompt_tokens: cumulative_prompt,
-                    completion_tokens: cumulative_completion,
-                    total_tokens: cumulative_prompt + cumulative_completion,
+                    prompt_tokens: cumulative_prompt as i32,
+                    completion_tokens: cumulative_completion as i32,
+                    total_tokens: (cumulative_prompt + cumulative_completion) as i32,
                 }))
                 .await;
             }
@@ -413,7 +413,7 @@ impl Agent {
     // TODO: Cleanup error/success handling here
     async fn handle_tool_call(
         &self,
-        tool_registry: &mut ToolRegistry,
+        tool_registry: &mut WasmToolSet,
         id: &str,
         function: &FunctionCall,
     ) -> (String, String) {
