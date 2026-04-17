@@ -6,9 +6,8 @@ use tracing::{error, info};
 
 use crate::errors::{AgentError, ToolError};
 use crate::model_clients::{FinishReason, FunctionCall, Message, ModelClient, Role, ToolCall};
-use crate::tools::AsyncTool;
+use crate::tools::{DefaultToolSet, Tool, ToolSet};
 
-use std::collections;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -36,8 +35,8 @@ const KEEP_RECENT_MESSAGES: usize = 10;
 const MAX_TOOL_RESULT_CHARS: usize = 2000;
 
 pub type AgentResult<T> = Result<T, AgentError>;
-
 pub type ToolResult<T> = Result<T, ToolError>;
+pub type AgentEventHandler = Arc<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub enum AgentEvent {
     ContentDelta(String),
@@ -59,29 +58,16 @@ pub enum AgentEvent {
     },
 }
 
-pub type AgentEventHandler = Arc<Box<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + Send + Sync>>;
-
-pub struct AgentBuilder {
+pub struct AgentBuilder<R: ToolSet> {
     num_recent_messages: usize,
     max_tool_result_chars: usize,
     event_handler: Option<AgentEventHandler>,
-    model_client: Box<dyn ModelClient>,
-    async_tools: collections::HashMap<String, Box<dyn AsyncTool>>,
+    model_client: Arc<dyn ModelClient>,
+    tools: R,
     message_history: Vec<Message>,
 }
 
-impl AgentBuilder {
-    pub fn new(client: impl ModelClient + 'static) -> Self {
-        Self {
-            num_recent_messages: KEEP_RECENT_MESSAGES,
-            max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
-            event_handler: None,
-            model_client: Box::new(client),
-            async_tools: collections::HashMap::new(),
-            message_history: Vec::new(),
-        }
-    }
-
+impl<R: ToolSet> AgentBuilder<R> {
     pub fn num_recent_messages(mut self, num: usize) -> Self {
         self.num_recent_messages = num;
         self
@@ -97,51 +83,64 @@ impl AgentBuilder {
         F: Fn(AgentEvent) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.event_handler = Some(Arc::new(Box::new(move |event| {
+        self.event_handler = Some(Arc::new(move |event| {
             Box::pin(handler(event)) as BoxFuture<'static, ()>
-        })));
+        }));
 
         self
     }
 
-    pub fn with_messsage_history(mut self, history: Vec<Message>) -> Self {
+    pub fn with_message_history(mut self, history: Vec<Message>) -> Self {
         self.message_history = history;
 
         self
     }
 
-    pub fn add_async_tool(mut self, tool: impl AsyncTool + 'static) -> Self {
-        self.async_tools
-            .insert(tool.name().to_string(), Box::new(tool));
-
-        self
-    }
-
-    pub fn build(self) -> Agent {
+    pub fn build(self) -> Agent<R> {
         Agent::new(
             self.num_recent_messages,
             self.max_tool_result_chars,
             self.model_client,
             self.event_handler,
-            self.async_tools,
+            self.tools,
             self.message_history,
         )
     }
 }
 
+impl AgentBuilder<DefaultToolSet> {
+    pub fn add_tool(mut self, tool: impl Tool + 'static) -> Self {
+        self.tools.insert(tool);
+
+        self
+    }
+}
+
 #[derive(Clone)]
-pub struct Agent {
+pub struct Agent<R: ToolSet> {
     num_recent_messages: usize,
     max_tool_result_chars: usize,
-    model_client: Arc<Box<dyn ModelClient>>,
+    model_client: Arc<dyn ModelClient>,
     event_handler: Option<AgentEventHandler>,
-    async_tools: Arc<collections::HashMap<String, Box<dyn AsyncTool>>>,
+    tools: R,
     messages: Vec<Message>,
 }
 
-impl Agent {
-    pub fn builder(client: impl ModelClient + 'static) -> AgentBuilder {
-        AgentBuilder::new(client)
+impl<R: ToolSet> Agent<R> {
+    /// Creates a builder using a custom [`ToolSet`]. Use this when you need
+    /// full control over tool execution (e.g. a WASM-backed tool set).
+    pub fn builder_with_tool_set(
+        client: impl ModelClient + 'static,
+        tool_set: R,
+    ) -> AgentBuilder<R> {
+        AgentBuilder {
+            num_recent_messages: KEEP_RECENT_MESSAGES,
+            max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
+            event_handler: None,
+            model_client: Arc::new(client),
+            tools: tool_set,
+            message_history: Vec::new(),
+        }
     }
 
     /// Runs the agent loop for one user turn.
@@ -151,10 +150,18 @@ impl Agent {
     /// stops. The updated message history (including assistant turns and tool
     /// results) is written back into `messages` in place so the caller's
     /// conversation state stays current.
-    pub async fn run(&mut self, prompt: Message) -> AgentResult<Message> {
+    pub async fn chat(&mut self, prompt: impl ToString) -> AgentResult<Message> {
         let mut cumulative_prompt = 0;
         let mut cumulative_completion = 0;
-        self.messages.push(prompt);
+
+        let message = Message {
+            role: Role::User,
+            content: Some(prompt.to_string()),
+            tool_call_id: None,
+            tool_calls: None,
+        };
+
+        self.messages.push(message);
 
         loop {
             self.truncate_old_tool_results();
@@ -166,7 +173,11 @@ impl Agent {
             //     model_session.params().max_tokens,
             // );
 
-            let resp = match self.model_client.complete(&self.messages).await {
+            let resp = match self
+                .model_client
+                .complete(&self.messages, &self.tools.schemas())
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     error!("[agent] model client error: {e}");
@@ -289,21 +300,21 @@ impl Agent {
 }
 
 // Private methods
-impl Agent {
+impl<R: ToolSet> Agent<R> {
     fn new(
         num_recent_messages: usize,
         max_tool_result_chars: usize,
-        model_client: Box<dyn ModelClient>,
+        model_client: Arc<dyn ModelClient>,
         event_handler: Option<AgentEventHandler>,
-        async_tools: collections::HashMap<String, Box<dyn AsyncTool>>,
+        tools: R,
         messages: Vec<Message>,
     ) -> Self {
         Self {
             num_recent_messages,
             max_tool_result_chars,
-            model_client: Arc::new(model_client),
+            model_client,
             event_handler,
-            async_tools: Arc::new(async_tools),
+            tools,
             messages,
         }
     }
@@ -338,44 +349,44 @@ impl Agent {
     }
 
     async fn handle_tool_call(
-        &self,
+        &mut self,
         id: &str,
         function: &FunctionCall,
     ) -> ToolResult<(String, String)> {
-        match self.async_tools.get(function.name.as_str()) {
-            Some(tool) => {
-                // TODO: Move to `ein-server` specific tool registry impl
-                // match tool.enable_chunk_sender().await {
-                //     Ok(should_enable_chunk_sender) => {
-                //         if should_enable_chunk_sender && let Some(handler) = &self.event_handler {
-                //             tool.set_chunk_sender(handler.clone(), id.to_owned())
-                //         }
-                //     }
-                //     Err(err) => {
-                //         eprintln!("[agent] tool '{}' error: {err}", function.name);
+        let res = self
+            .tools
+            .call_tool(&function.name, id, &function.arguments)
+            .await
+            .map_err(|err| {
+                if err.to_string().contains("tool not found") {
+                    error!("[agent] unknown tool '{}'", function.name);
+                    ToolError::Unknown(function.name.clone())
+                } else {
+                    ToolError::Execution(format!("{err}"))
+                }
+            })?;
 
-                //         return (format!("Error: {err}"), String::new());
-                //     }
-                // };
+        let meta = res
+            .metadata
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
 
-                let res = tool
-                    .call(id, &function.arguments)
-                    .await
-                    .or_else(|err| Err(ToolError::Execution(format!("{err}"))))?;
+        Ok((res.content, meta))
+    }
+}
 
-                let meta = res
-                    .metadata
-                    .as_ref()
-                    .map(|v| v.to_string())
-                    .unwrap_or_default();
-
-                Ok((res.content, meta))
-            }
-            None => {
-                error!("[agent] unknown tool '{}'", function.name);
-
-                Err(ToolError::Unknown(function.name.clone()))
-            }
+impl Agent<DefaultToolSet> {
+    /// Creates a builder using the default tool set. Tools can be added with
+    /// [`AgentBuilder::add_tool`]. This is the entry point for most users.
+    pub fn builder(client: impl ModelClient + 'static) -> AgentBuilder<DefaultToolSet> {
+        AgentBuilder {
+            num_recent_messages: KEEP_RECENT_MESSAGES,
+            max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
+            event_handler: None,
+            model_client: Arc::new(client),
+            tools: DefaultToolSet::default(),
+            message_history: Vec::new(),
         }
     }
 }
@@ -398,7 +409,11 @@ mod tests {
 
     #[async_trait]
     impl ModelClient for BasicTestModelClient {
-        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<CompletionResponse> {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDef],
+        ) -> anyhow::Result<CompletionResponse> {
             Ok(self.response.clone())
         }
     }
@@ -440,7 +455,11 @@ mod tests {
 
     #[async_trait]
     impl ModelClient for ToolTestModelClient {
-        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<CompletionResponse> {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDef],
+        ) -> anyhow::Result<CompletionResponse> {
             let mut call_counter = self.call_counter.lock().unwrap();
             if *call_counter == 0 {
                 *call_counter += 1;
@@ -498,14 +517,7 @@ mod tests {
         let model_client = basic_test_client();
         let mut agent = Agent::builder(model_client).build();
 
-        let message = Message {
-            role: Role::User,
-            content: Some("user message".to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        let res = agent.run(message).await.unwrap();
+        let res = agent.chat("user message").await.unwrap();
         assert_eq!(res.role, Role::Assistant);
         assert_eq!(res.content, Some("assistant response".to_string()))
     }
@@ -528,7 +540,7 @@ mod tests {
         }
 
         #[async_trait]
-        impl AsyncTool for TestTool {
+        impl Tool for TestTool {
             fn name(&self) -> &str {
                 "test_tool"
             }
@@ -553,18 +565,9 @@ mod tests {
 
         let model_client = tool_test_client();
         let tool = TestTool::new();
-        let mut agent = Agent::builder(model_client)
-            .add_async_tool(tool.clone())
-            .build();
+        let mut agent = Agent::builder(model_client).add_tool(tool.clone()).build();
 
-        let message = Message {
-            role: Role::User,
-            content: Some("user message".to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        let _ = agent.run(message).await.unwrap();
+        let _ = agent.chat("user message").await.unwrap();
 
         assert_eq!(*tool.called_arg.lock().unwrap(), "test_val".to_string());
     }

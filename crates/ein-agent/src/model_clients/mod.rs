@@ -1,10 +1,15 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::tools::ToolDef;
+
 #[async_trait]
 pub trait ModelClient {
-    // TODO: Add `tools` arg
-    async fn complete(&self, messages: &[Message]) -> anyhow::Result<CompletionResponse>;
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDef],
+    ) -> anyhow::Result<CompletionResponse>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
