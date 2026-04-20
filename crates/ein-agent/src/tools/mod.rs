@@ -34,11 +34,12 @@ pub trait ToolSet {
 
     async fn call_tool(&mut self, name: &str, id: &str, args: &str) -> anyhow::Result<ToolResult>;
 
-    async fn unload(mut self)
+    async fn cleanup(mut self)
     where
         Self: Sized,
     {
         // No-op for `ToolSet` impls that don't need to release resources
+        ()
     }
 }
 

@@ -33,5 +33,5 @@ pub mod errors;
 pub mod model_clients;
 pub mod tools;
 
-pub use agents::{Agent, AgentBuilder, SessionParams};
+pub use agents::{Agent, AgentBuilder, AgentEvent, SessionParams};
 pub use async_trait::async_trait;

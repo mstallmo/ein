@@ -5,8 +5,16 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait ModelClient {
     async fn complete(
-        &self,
+        &mut self,
         messages: &[Message],
         tools: &[ToolDef],
     ) -> anyhow::Result<CompletionResponse>;
+
+    async fn cleanup(mut self)
+    where
+        Self: Sized,
+    {
+        // No-op for `ModelClient` impls that don't need to release resources
+        ()
+    }
 }

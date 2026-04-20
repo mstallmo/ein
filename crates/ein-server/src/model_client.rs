@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ein_agent::model_clients::{CompletionRequest, CompletionResponse, Message, ToolDef};
+use ein_agent::{
+    async_trait,
+    model_clients::{CompletionRequest, CompletionResponse, Message, ModelClient, ToolDef},
+};
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
 use wasmtime_wasi::WasiCtxBuilder;
@@ -15,7 +18,7 @@ use wasmtime_wasi_http::WasiHttpCtx;
 
 use crate::ModelClientHarnessState;
 use crate::agent::SessionParams;
-use crate::model_client_bindings::{ModelClient, ModelClientPre};
+use crate::model_client_bindings::{ModelClient as ModelClientPlugin, ModelClientPre};
 
 #[derive(Clone)]
 pub struct ModelClientSessionManager {
@@ -173,8 +176,11 @@ impl ModelClientSession {
     pub fn params(&self) -> &SessionParams {
         &self.params
     }
+}
 
-    pub async fn complete(
+#[async_trait]
+impl ModelClient for ModelClientSession {
+    async fn complete(
         &mut self,
         messages: &[Message],
         tools: &[ToolDef],
@@ -189,14 +195,16 @@ impl ModelClientSession {
         self.client.complete(&req).await
     }
 
-    pub async fn cleanup(self) -> anyhow::Result<()> {
-        self.client.cleanup().await
+    async fn cleanup(mut self) {
+        if let Err(e) = self.client.cleanup().await {
+            eprintln!("[model_client] cleanup error: {e}");
+        }
     }
 }
 
 pub struct WasmModelClient {
     store: Store<ModelClientHarnessState>,
-    bindings: ModelClient,
+    bindings: ModelClientPlugin,
     handle: ResourceAny,
 }
 
@@ -269,7 +277,7 @@ fn build_model_client_linker(engine: &Engine) -> anyhow::Result<Linker<ModelClie
     let mut linker: Linker<ModelClientHarnessState> = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
-    ModelClient::add_to_linker::<ModelClientHarnessState, HasSelf<ModelClientHarnessState>>(
+    ModelClientPlugin::add_to_linker::<ModelClientHarnessState, HasSelf<ModelClientHarnessState>>(
         &mut linker,
         |state| state,
     )?;

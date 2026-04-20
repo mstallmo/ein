@@ -29,6 +29,7 @@
 //! ```
 
 use anyhow::anyhow;
+use ein_agent::model_clients::ModelClient;
 use ein_plugin::model_client::{FinishReason, FunctionCall, Message, Role, ToolCall};
 use ein_proto::ein::agent_event;
 use ein_proto::ein::{
@@ -277,7 +278,7 @@ impl Agent {
                                     .await;
 
                                     let (result_str, metadata) =
-                                        self.handle_tool_call(tool_registry, id, function).await;
+                                        self.handle_tool_call(tool_registry, &id, &function).await;
 
                                     // Notify the client that the tool finished.
                                     self.broadcast_event(Event::ToolCallEnd(ToolCallEnd {

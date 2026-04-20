@@ -9,6 +9,7 @@ use crate::errors::{AgentError, ToolError};
 use crate::model_clients::ModelClient;
 use crate::tools::{DefaultToolSet, Tool, ToolSet};
 
+use std::mem;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ pub type AgentResult<T> = Result<T, AgentError>;
 pub type ToolResult<T> = Result<T, ToolError>;
 pub type AgentEventHandler = Arc<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
+#[derive(Debug, Clone)]
 pub enum AgentEvent {
     ContentDelta(String),
     TokenUsage {
@@ -59,16 +61,16 @@ pub enum AgentEvent {
     },
 }
 
-pub struct AgentBuilder<R: ToolSet> {
+pub struct AgentBuilder<MC: ModelClient, TS: ToolSet> {
     num_recent_messages: usize,
     max_tool_result_chars: usize,
     event_handler: Option<AgentEventHandler>,
-    model_client: Arc<dyn ModelClient>,
-    tools: R,
+    model_client: MC,
+    tools: TS,
     message_history: Vec<Message>,
 }
 
-impl<R: ToolSet> AgentBuilder<R> {
+impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
     pub fn num_recent_messages(mut self, num: usize) -> Self {
         self.num_recent_messages = num;
         self
@@ -97,7 +99,7 @@ impl<R: ToolSet> AgentBuilder<R> {
         self
     }
 
-    pub fn build(self) -> Agent<R> {
+    pub fn build(self) -> Agent<MC, TS> {
         Agent::new(
             self.num_recent_messages,
             self.max_tool_result_chars,
@@ -109,7 +111,7 @@ impl<R: ToolSet> AgentBuilder<R> {
     }
 }
 
-impl AgentBuilder<DefaultToolSet> {
+impl<MC: ModelClient> AgentBuilder<MC, DefaultToolSet> {
     pub fn add_tool(mut self, tool: impl Tool + 'static) -> Self {
         self.tools.insert(tool);
 
@@ -118,30 +120,39 @@ impl AgentBuilder<DefaultToolSet> {
 }
 
 #[derive(Clone)]
-pub struct Agent<R: ToolSet> {
+pub struct Agent<MC: ModelClient, TS: ToolSet> {
     num_recent_messages: usize,
     max_tool_result_chars: usize,
-    model_client: Arc<dyn ModelClient>,
+    model_client: MC,
     event_handler: Option<AgentEventHandler>,
-    tools: R,
+    tools: TS,
     messages: Vec<Message>,
 }
 
-impl<R: ToolSet> Agent<R> {
+impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
     /// Creates a builder using a custom [`ToolSet`]. Use this when you need
     /// full control over tool execution (e.g. a WASM-backed tool set).
-    pub fn builder_with_tool_set(
-        client: impl ModelClient + 'static,
-        tool_set: R,
-    ) -> AgentBuilder<R> {
+    pub fn builder_with_tool_set(client: MC, tool_set: TS) -> AgentBuilder<MC, TS> {
         AgentBuilder {
             num_recent_messages: KEEP_RECENT_MESSAGES,
             max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
             event_handler: None,
-            model_client: Arc::new(client),
+            model_client: client,
             tools: tool_set,
             message_history: Vec::new(),
         }
+    }
+
+    pub async fn replace_model_client(&mut self, model_client: MC)
+    where
+        MC: Send + 'static,
+    {
+        let old_client = mem::replace(&mut self.model_client, model_client);
+        old_client.cleanup().await
+    }
+
+    pub fn messages(&self) -> &Vec<Message> {
+        &self.messages
     }
 
     /// Runs the agent loop for one user turn.
@@ -298,16 +309,25 @@ impl<R: ToolSet> Agent<R> {
             }
         }
     }
+
+    pub async fn cleanup(self)
+    where
+        MC: Send + 'static,
+        TS: Send + 'static,
+    {
+        self.model_client.cleanup().await;
+        self.tools.cleanup().await;
+    }
 }
 
 // Private methods
-impl<R: ToolSet> Agent<R> {
+impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
     fn new(
         num_recent_messages: usize,
         max_tool_result_chars: usize,
-        model_client: Arc<dyn ModelClient>,
+        model_client: MC,
         event_handler: Option<AgentEventHandler>,
-        tools: R,
+        tools: TS,
         messages: Vec<Message>,
     ) -> Self {
         Self {
@@ -320,10 +340,14 @@ impl<R: ToolSet> Agent<R> {
         }
     }
 
-    async fn broadcast_event(&self, event: AgentEvent) {
-        if let Some(event_handler) = &self.event_handler {
-            event_handler(event).await;
-        }
+    fn broadcast_event(&self, event: AgentEvent) -> BoxFuture<'static, ()> {
+        let handler = self.event_handler.clone();
+
+        Box::pin(async move {
+            if let Some(event_handler) = handler {
+                event_handler(event).await;
+            }
+        })
     }
 
     /// Replaces the `content` of stale, large tool result messages with a compact
@@ -377,15 +401,15 @@ impl<R: ToolSet> Agent<R> {
     }
 }
 
-impl Agent<DefaultToolSet> {
+impl<MC: ModelClient> Agent<MC, DefaultToolSet> {
     /// Creates a builder using the default tool set. Tools can be added with
     /// [`AgentBuilder::add_tool`]. This is the entry point for most users.
-    pub fn builder(client: impl ModelClient + 'static) -> AgentBuilder<DefaultToolSet> {
+    pub fn builder(client: MC) -> AgentBuilder<MC, DefaultToolSet> {
         AgentBuilder {
             num_recent_messages: KEEP_RECENT_MESSAGES,
             max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
             event_handler: None,
-            model_client: Arc::new(client),
+            model_client: client,
             tools: DefaultToolSet::default(),
             message_history: Vec::new(),
         }
@@ -408,7 +432,7 @@ mod tests {
     #[async_trait]
     impl ModelClient for BasicTestModelClient {
         async fn complete(
-            &self,
+            &mut self,
             _messages: &[Message],
             _tools: &[ToolDef],
         ) -> anyhow::Result<CompletionResponse> {
@@ -454,7 +478,7 @@ mod tests {
     #[async_trait]
     impl ModelClient for ToolTestModelClient {
         async fn complete(
-            &self,
+            &mut self,
             _messages: &[Message],
             _tools: &[ToolDef],
         ) -> anyhow::Result<CompletionResponse> {

@@ -261,7 +261,7 @@ impl ToolSet for WasmToolSet {
         }
     }
 
-    async fn unload(mut self) {
+    async fn cleanup(mut self) {
         for (name, tool) in self.0.drain() {
             if let Err(err) = tool.cleanup().await {
                 eprintln!("Failed to cleanup tool {name}: {err}");
