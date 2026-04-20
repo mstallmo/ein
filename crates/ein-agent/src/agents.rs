@@ -7,7 +7,7 @@ use tracing::{error, info};
 
 use crate::errors::{AgentError, ToolError};
 use crate::model_clients::ModelClient;
-use crate::tools::{DefaultToolSet, Tool, ToolSet};
+use crate::tools::{NativeToolSet, Tool, ToolSet};
 
 use std::mem;
 use std::sync::Arc;
@@ -111,7 +111,7 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
     }
 }
 
-impl<MC: ModelClient> AgentBuilder<MC, DefaultToolSet> {
+impl<MC: ModelClient> AgentBuilder<MC, NativeToolSet> {
     pub fn add_tool(mut self, tool: impl Tool + 'static) -> Self {
         self.tools.insert(tool);
 
@@ -401,16 +401,16 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
     }
 }
 
-impl<MC: ModelClient> Agent<MC, DefaultToolSet> {
+impl<MC: ModelClient> Agent<MC, NativeToolSet> {
     /// Creates a builder using the default tool set. Tools can be added with
     /// [`AgentBuilder::add_tool`]. This is the entry point for most users.
-    pub fn builder(client: MC) -> AgentBuilder<MC, DefaultToolSet> {
+    pub fn builder(client: MC) -> AgentBuilder<MC, NativeToolSet> {
         AgentBuilder {
             num_recent_messages: KEEP_RECENT_MESSAGES,
             max_tool_result_chars: MAX_TOOL_RESULT_CHARS,
             event_handler: None,
             model_client: client,
-            tools: DefaultToolSet::default(),
+            tools: NativeToolSet::default(),
             message_history: Vec::new(),
         }
     }

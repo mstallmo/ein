@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
+mod native;
+
 pub use ein_core::types::{ToolDef, ToolResult};
+pub use native::NativeToolSet;
 
 use async_trait::async_trait;
-
-use std::collections;
 
 /// A single in-process tool. Implement this for simple, `Send + Sync` tools
 /// and register them with [`DefaultToolSet`].
@@ -40,30 +41,5 @@ pub trait ToolSet {
     {
         // No-op for `ToolSet` impls that don't need to release resources
         ()
-    }
-}
-
-/// Default [`ToolSet`] implementation backed by a collection of [`Tool`]
-/// trait objects. Suitable for simple in-process tools.
-#[derive(Default)]
-pub struct DefaultToolSet(collections::HashMap<String, Box<dyn Tool>>);
-
-impl DefaultToolSet {
-    pub fn insert(&mut self, tool: impl Tool + 'static) {
-        self.0.insert(tool.name().to_string(), Box::new(tool));
-    }
-}
-
-#[async_trait]
-impl ToolSet for DefaultToolSet {
-    fn schemas(&self) -> Vec<ToolDef> {
-        self.0.values().map(|v| v.schema()).collect()
-    }
-
-    async fn call_tool(&mut self, name: &str, id: &str, args: &str) -> anyhow::Result<ToolResult> {
-        match self.0.get(name) {
-            Some(tool) => tool.call(id, args).await,
-            None => Err(anyhow::anyhow!("tool not found: {name}")),
-        }
     }
 }
