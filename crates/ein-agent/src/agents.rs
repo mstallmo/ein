@@ -53,6 +53,10 @@ pub enum AgentEvent {
         tool_name: String,
         arguments: String,
     },
+    ToolOutputChunk {
+        tool_call_id: String,
+        output: String,
+    },
     ToolCallEnd {
         tool_call_id: String,
         tool_name: String,
@@ -99,7 +103,11 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
         self
     }
 
-    pub fn build(self) -> Agent<MC, TS> {
+    pub fn build(mut self) -> Agent<MC, TS> {
+        if let Some(handler) = &self.event_handler {
+            self.tools.set_event_handler(handler.clone());
+        }
+
         Agent::new(
             self.num_recent_messages,
             self.max_tool_result_chars,

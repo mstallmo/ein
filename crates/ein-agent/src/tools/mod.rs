@@ -8,6 +8,8 @@ pub use native::NativeToolSet;
 
 use async_trait::async_trait;
 
+use crate::agents::AgentEventHandler;
+
 /// A single in-process tool. Implement this for simple, `Send + Sync` tools
 /// and register them with [`DefaultToolSet`].
 ///
@@ -35,11 +37,11 @@ pub trait ToolSet {
 
     async fn call_tool(&mut self, name: &str, id: &str, args: &str) -> anyhow::Result<ToolResult>;
 
+    fn set_event_handler(&mut self, _handler: AgentEventHandler) {}
+
     async fn cleanup(mut self)
     where
         Self: Sized,
     {
-        // No-op for `ToolSet` impls that don't need to release resources
-        ()
     }
 }

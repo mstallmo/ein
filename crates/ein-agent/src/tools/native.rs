@@ -8,9 +8,6 @@ use ein_core::types::{ToolDef, ToolResult};
 
 use crate::tools::{Tool, ToolSet};
 
-// TODO:
-// - Refactor WASM tool runtime implementation from the gRPC server into this crate
-// - Put WASM tool runtime behind a feature flag
 /// Native [`ToolSet`] implementation backed by a collection of [`Tool`]
 /// trait objects.
 #[derive(Default)]
