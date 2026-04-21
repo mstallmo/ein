@@ -14,7 +14,5 @@ pub trait ModelClient {
     where
         Self: Sized,
     {
-        // No-op for `ModelClient` impls that don't need to release resources
-        ()
     }
 }

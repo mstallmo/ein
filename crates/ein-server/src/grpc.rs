@@ -22,16 +22,16 @@ use std::sync::Arc;
 
 use ein_agent::{Agent, AgentEvent};
 use ein_plugin::model_client::{Message, Role};
-use ein_proto::ein::{AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart};
+use ein_proto::ein::{
+    AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart, ToolOutputChunk,
+};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use wasmtime::Engine;
-use wasmtime::component::Linker;
 
-use crate::HarnessState;
 use crate::model_client::ModelClientSessionManager;
-use crate::tools::{WasmToolSet, build_tool_linker};
+use crate::tools::ToolSetManager;
 use ein_proto::ein::{
     AgentError, AgentEvent as AgentEventProto, HistoryMessage, HistoryToolCall,
     ListSessionsRequest, ListSessionsResponse, SessionStarted, SessionSummary, UserInput,
@@ -45,9 +45,8 @@ use ein_proto::ein::{
 /// and cached — only plugins that are actually requested ever consume memory.
 pub struct AgentServer {
     config: Arc<crate::EinConfig>,
-    engine: Engine,
     model_client_session_manager: ModelClientSessionManager,
-    tool_linker: Arc<Linker<HarnessState>>,
+    tool_set_manager: ToolSetManager,
     session_store: Arc<crate::persistence::SessionStore>,
 }
 
@@ -59,20 +58,19 @@ impl AgentServer {
     /// - Scans the model client directory to determine the fallback plugin
     ///   name; no WASM compilation happens at this point.
     pub async fn new() -> anyhow::Result<Self> {
-        let engine = Engine::default();
         let config = Arc::new(crate::EinConfig::default());
+        let engine = Engine::default();
 
         let model_client_session_manager =
             ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
-        let tool_linker = Arc::new(build_tool_linker(&engine)?);
+        let tool_set_manager = ToolSetManager::new(&config.plugin_dir, engine).await?;
         let session_store =
             Arc::new(crate::persistence::SessionStore::open(&config.db_path).await?);
 
         Ok(Self {
             config,
-            engine,
             model_client_session_manager,
-            tool_linker,
+            tool_set_manager,
             session_store,
         })
     }
@@ -118,9 +116,8 @@ impl AgentService for AgentServer {
 
         // Clone Arcs — cheap reference-count bumps, no data is copied.
         let config = self.config.clone();
-        let engine = self.engine.clone();
         let model_client_session_manager = self.model_client_session_manager.clone();
-        let tool_linker = self.tool_linker.clone();
+        let tool_set_manager = self.tool_set_manager.clone();
         let session_store = self.session_store.clone();
 
         tokio::spawn(async move {
@@ -227,16 +224,7 @@ impl AgentService for AgentServer {
                 "[session] loading plugins from {}",
                 config.plugin_dir.display()
             );
-            let tool_set = match WasmToolSet::load(
-                &engine,
-                &tool_linker,
-                &config.plugin_dir,
-                &session_cfg.allowed_paths,
-                &session_cfg.allowed_hosts,
-                &session_cfg.plugin_configs,
-            )
-            .await
-            {
+            let tool_set = match tool_set_manager.new_tool_set(&session_cfg).await {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx
@@ -312,6 +300,13 @@ impl AgentService for AgentServer {
                                 tool_call_id,
                                 tool_name,
                                 arguments,
+                            }),
+                            AgentEvent::ToolOutputChunk {
+                                tool_call_id,
+                                output,
+                            } => Event::ToolOutputChunk(ToolOutputChunk {
+                                tool_call_id,
+                                output,
                             }),
                             AgentEvent::ToolCallEnd {
                                 tool_call_id,
