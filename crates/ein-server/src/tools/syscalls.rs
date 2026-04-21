@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use ein_proto::ein::{AgentEvent, ToolOutputChunk, agent_event::Event};
+use ein_agent::AgentEvent;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-impl crate::bindings::ein::host::host::Host for crate::HarnessState {
+use super::ToolState;
+
+impl super::bindings::ein::host::host::Host for ToolState {
     async fn log(&mut self, msg: String) {
         println!("[plugin] {msg}");
     }
 }
 
-impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
+impl super::bindings::ein::plugin::process::Host for ToolState {
     async fn spawn(&mut self, args: String) -> Result<String, String> {
         println!("[plugin] spawning new process: {args}");
 
@@ -24,8 +26,6 @@ impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
 
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let chunk_tx = self.chunk_tx.clone();
-        let tool_call_id = self.tool_call_id.clone();
 
         let mut stdout_lines = BufReader::new(stdout).lines();
         let mut stderr_lines = BufReader::new(stderr).lines();
@@ -39,13 +39,14 @@ impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
                     Ok(Some(l)) => {
                         stdout_buf.push_str(&l);
                         stdout_buf.push('\n');
-                        if let Some(tx) = &chunk_tx {
-                            let _ = tx.send(Ok(AgentEvent {
-                                event: Some(Event::ToolOutputChunk(ToolOutputChunk {
-                                    tool_call_id: tool_call_id.clone(),
-                                    output: l,
-                                })),
-                            })).await;
+
+                        if let Some(handler) = &self.event_handler && let Some(tool_call_id) = &self.current_call_id {
+                            let event = AgentEvent::ToolOutputChunk {
+                                tool_call_id: tool_call_id.clone(),
+                                output: l,
+                            };
+
+                            handler(event).await;
                         }
                     }
                     _ => stdout_done = true,
@@ -66,11 +67,5 @@ impl crate::bindings::ein::plugin::process::Host for crate::HarnessState {
             "Exit code: {}\nStdout:\n{stdout_buf}\nStderr:\n{stderr_buf}",
             status.code().unwrap_or(-1)
         ))
-    }
-}
-
-impl crate::model_client_bindings::ein::host::host::Host for crate::ModelClientHarnessState {
-    async fn log(&mut self, msg: String) {
-        println!("[model client] {msg}");
     }
 }

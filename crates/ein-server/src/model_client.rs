@@ -1,26 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
+mod bindings;
+mod syscalls;
+
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
-use ein_plugin::model_client::{CompletionRequest, CompletionResponse, Message, Tool};
+use ein_agent::{
+    SessionParams, async_trait,
+    model_clients::{CompletionRequest, CompletionResponse, Message, ModelClient, ToolDef},
+};
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
-use wasmtime_wasi::WasiCtxBuilder;
-use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi_http::{
+    HttpResult, WasiHttpCtx,
+    bindings::http::types::ErrorCode,
+    body::HyperOutgoingBody,
+    types::{HostFutureIncomingResponse, OutgoingRequestConfig, default_send_request},
+};
 
-use crate::ModelClientHarnessState;
-use crate::agent::SessionParams;
-use crate::model_client_bindings::{ModelClient, ModelClientPre};
+use bindings::{ModelClient as ModelClientPlugin, ModelClientPre};
 
 #[derive(Clone)]
 pub struct ModelClientSessionManager {
     engine: Engine,
-    linker: Arc<Linker<ModelClientHarnessState>>,
+    linker: Arc<Linker<ModelClientState>>,
     cache: ModelClientCache,
     fallback_name: Arc<str>,
 }
@@ -169,15 +178,12 @@ pub struct ModelClientSession {
     client: WasmModelClient,
 }
 
-impl ModelClientSession {
-    pub fn params(&self) -> &SessionParams {
-        &self.params
-    }
-
-    pub async fn complete(
+#[async_trait]
+impl ModelClient for ModelClientSession {
+    async fn complete(
         &mut self,
         messages: &[Message],
-        tools: &[Tool],
+        tools: &[ToolDef],
     ) -> anyhow::Result<CompletionResponse> {
         let req = CompletionRequest {
             model: self.params.model.clone(),
@@ -189,21 +195,91 @@ impl ModelClientSession {
         self.client.complete(&req).await
     }
 
-    pub async fn cleanup(self) -> anyhow::Result<()> {
-        self.client.cleanup().await
+    async fn cleanup(mut self) {
+        if let Err(e) = self.client.cleanup().await {
+            eprintln!("[model_client] cleanup error: {e}");
+        }
+    }
+}
+
+/// Shared state threaded through each Wasmtime `Store` for model client plugins.
+///
+/// Includes `WasiHttpCtx` so that the plugin's `wasi:http/outgoing-handler`
+/// import (used by `ein_http` via `wstd`) is satisfied by the host linker.
+///
+/// `allowed_hosts` is a set of hostnames the plugin is permitted to connect to.
+/// Requests to any other host are rejected with `ErrorCode::HttpRequestDenied`.
+struct ModelClientState {
+    pub resource_table: ResourceTable,
+    pub wasi_ctx: WasiCtx,
+    pub http_ctx: WasiHttpCtx,
+    pub allowed_hosts: HashSet<String>,
+}
+
+impl WasiView for ModelClientState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
+    }
+}
+
+impl wasmtime_wasi_http::WasiHttpView for ModelClientState {
+    fn ctx(&mut self) -> &mut WasiHttpCtx {
+        &mut self.http_ctx
+    }
+
+    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
+        &mut self.resource_table
+    }
+
+    fn send_request(
+        &mut self,
+        request: hyper::Request<HyperOutgoingBody>,
+        config: OutgoingRequestConfig,
+    ) -> HttpResult<HostFutureIncomingResponse> {
+        // The WASI HTTP request model stores authority separately from the
+        // path, so wasmtime_wasi_http may not embed the host in the hyper
+        // URI. Fall back to the Host header if the URI has no host component.
+        let host = request
+            .uri()
+            .host()
+            .map(|h| h.to_string())
+            .or_else(|| {
+                request
+                    .headers()
+                    .get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|h| h.split(':').next())
+                    .map(|h| h.to_string())
+            })
+            .unwrap_or_default();
+
+        let allowed = self.allowed_hosts.contains("*") || self.allowed_hosts.contains(&host);
+        if !allowed {
+            eprintln!(
+                "[model client] blocked request to '{host}' — not in allowlist {:?}. \
+                 Set 'base_url' in ~/.ein/config.json to allow this host.",
+                self.allowed_hosts
+            );
+            return Err(ErrorCode::HttpRequestDenied.into());
+        }
+
+        Ok(default_send_request(request, config))
     }
 }
 
 pub struct WasmModelClient {
-    store: Store<ModelClientHarnessState>,
-    bindings: ModelClient,
+    store: Store<ModelClientState>,
+    bindings: ModelClientPlugin,
     handle: ResourceAny,
 }
 
 impl WasmModelClient {
     async fn load(
         engine: &Engine,
-        instance_pre: &ModelClientPre<ModelClientHarnessState>,
+        instance_pre: &ModelClientPre<ModelClientState>,
         params_json: &str,
         allowed_hosts: HashSet<String>,
     ) -> anyhow::Result<Self> {
@@ -211,7 +287,7 @@ impl WasmModelClient {
 
         let mut store = Store::new(
             engine,
-            ModelClientHarnessState {
+            ModelClientState {
                 resource_table: ResourceTable::new(),
                 wasi_ctx: wasi,
                 http_ctx: WasiHttpCtx::new(),
@@ -265,11 +341,11 @@ impl WasmModelClient {
 /// Builds the Wasmtime linker for model client plugins — called once at server startup.
 ///
 /// Registers WASI p2, WASI HTTP, and the `ein:model-client/host` interface.
-fn build_model_client_linker(engine: &Engine) -> anyhow::Result<Linker<ModelClientHarnessState>> {
-    let mut linker: Linker<ModelClientHarnessState> = Linker::new(engine);
+fn build_model_client_linker(engine: &Engine) -> anyhow::Result<Linker<ModelClientState>> {
+    let mut linker: Linker<ModelClientState> = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
-    ModelClient::add_to_linker::<ModelClientHarnessState, HasSelf<ModelClientHarnessState>>(
+    ModelClientPlugin::add_to_linker::<ModelClientState, HasSelf<ModelClientState>>(
         &mut linker,
         |state| state,
     )?;
@@ -327,7 +403,7 @@ async fn compile_model_client_component(
 /// `base_url` is absent and the plugin chooses its own endpoint).
 async fn instantiate_model_client(
     engine: &Engine,
-    instance_pre: &ModelClientPre<ModelClientHarnessState>,
+    instance_pre: &ModelClientPre<ModelClientState>,
     params_json: &str,
     allowed_hosts: &[String],
 ) -> anyhow::Result<WasmModelClient> {
@@ -358,9 +434,9 @@ impl ModelClientCache {
     pub async fn get_or_prepare(
         &self,
         engine: &Engine,
-        linker: &Linker<ModelClientHarnessState>,
+        linker: &Linker<ModelClientState>,
         client_name: &str,
-    ) -> anyhow::Result<ModelClientPre<ModelClientHarnessState>> {
+    ) -> anyhow::Result<ModelClientPre<ModelClientState>> {
         // Get entry for the client name, inserting an empty OnceCell if no entry exits yet.
         let cell = {
             let mut lock = self.0.cache.lock().expect("model cache lock poisoned");
@@ -381,5 +457,5 @@ impl ModelClientCache {
 
 struct ModelClientCacheInner {
     model_client_dir: PathBuf,
-    cache: Mutex<HashMap<String, OnceCell<ModelClientPre<ModelClientHarnessState>>>>,
+    cache: Mutex<HashMap<String, OnceCell<ModelClientPre<ModelClientState>>>>,
 }

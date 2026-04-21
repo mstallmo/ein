@@ -1,37 +1,231 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use crate::{HarnessState, bindings::Plugin};
-use ein_plugin::{
-    model_client::Tool,
-    tool::{ToolDef, ToolResult},
+mod bindings;
+mod syscalls;
+
+use ein_agent::{
+    AgentEventHandler, async_trait,
+    tools::{ToolDef, ToolResult, ToolSet},
 };
-use ein_proto::ein::{AgentEvent, PluginConfig};
+use tokio::fs;
+use wasmtime::{Engine, Store, component::*};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx, WasiCtxView, WasiView};
+
 use std::{
-    collections::{self, HashMap},
+    collections,
     net::IpAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
-use tokio::{fs, sync::mpsc};
-use tonic::Status;
-use wasmtime::{Engine, Store, component::*};
-use wasmtime_wasi::{DirPerms, FilePerms, WasiCtx};
+
+use bindings::Plugin;
+
+#[derive(Clone)]
+pub struct ToolSetManager {
+    engine: Engine,
+    linker: Arc<Linker<ToolState>>,
+    tool_dir: PathBuf,
+}
+
+impl ToolSetManager {
+    pub async fn new<P: AsRef<Path>>(tool_dir: P, engine: Engine) -> anyhow::Result<Self> {
+        let linker = Arc::new(build_tool_linker(&engine)?);
+
+        Ok(Self {
+            engine,
+            linker,
+            tool_dir: tool_dir.as_ref().to_owned(),
+        })
+    }
+
+    pub async fn new_tool_set(
+        &self,
+        session_cfg: &ein_proto::ein::SessionConfig,
+    ) -> anyhow::Result<WasmToolSet> {
+        WasmToolSet::load(&self.engine, &self.linker, &self.tool_dir, session_cfg).await
+    }
+}
+
+/// Builds the Wasmtime linker for tool plugins — called once at server startup.
+///
+/// Registers WASI p2 interface.
+fn build_tool_linker(engine: &Engine) -> anyhow::Result<Linker<ToolState>> {
+    let mut linker: Linker<ToolState> = Linker::new(engine);
+    // Register standard WASI p2 host functions.
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // Register Ein-specific host functions (syscalls exposed to plugins).
+    Plugin::add_to_linker::<ToolState, HasSelf<ToolState>>(&mut linker, |state| state)?;
+
+    Ok(linker)
+}
+
+/// Shared state threaded through each Wasmtime `Store` for tool plugins.
+///
+/// Every WASM plugin instance gets its own `Store<HarnessState>`, giving it
+/// an isolated WASI context and resource table.
+struct ToolState {
+    pub resource_table: ResourceTable,
+    pub wasi_ctx: WasiCtx,
+    pub current_call_id: Option<String>,
+    /// Set by the agent loop before each Bash tool call so the `spawn` syscall
+    /// can stream stdout lines upstream as `ToolOutputChunk` events.
+    pub event_handler: Option<AgentEventHandler>,
+}
+
+impl WasiView for ToolState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi_ctx,
+            table: &mut self.resource_table,
+        }
+    }
+}
+
+pub struct WasmToolSet(collections::HashMap<String, WasmTool>);
+
+impl WasmToolSet {
+    fn new() -> Self {
+        Self(collections::HashMap::new())
+    }
+
+    async fn load<P: AsRef<Path>>(
+        engine: &Engine,
+        linker: &Linker<ToolState>,
+        plugin_dir: P,
+        session_cfg: &ein_proto::ein::SessionConfig,
+    ) -> anyhow::Result<Self> {
+        let mut registry = Self::new();
+
+        let mut entries = fs::read_dir(plugin_dir.as_ref()).await.map_err(|e| {
+            let dir = plugin_dir.as_ref().display();
+            anyhow::anyhow!(
+                "Plugin directory not found: {dir}\n\n\
+                 In debug builds, run `cargo build --target wasm32-wasip2` first.\n\
+                 In release builds, run `./scripts/build_install_plugins.sh`.\n\
+                 Details: {e}"
+            )
+        })?;
+
+        loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
+                        let stem = entry
+                            .path()
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let pc = session_cfg.plugin_configs.get(&stem);
+                        let merged_paths = merge_dedup(
+                            &session_cfg.allowed_paths,
+                            pc.map(|p| p.allowed_paths.as_slice()).unwrap_or(&[]),
+                        );
+                        let merged_hosts = merge_dedup(
+                            &session_cfg.allowed_hosts,
+                            pc.map(|p| p.allowed_hosts.as_slice()).unwrap_or(&[]),
+                        );
+
+                        let tool = WasmTool::load(
+                            engine,
+                            linker,
+                            entry.path(),
+                            &merged_paths,
+                            &merged_hosts,
+                        )
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to load plugin '{}': {e}\n\n\
+                                 In debug builds try rebuilding with 'cargo build -p {} --target wasm32-wasip2'
+                                 In release build try rebuilding with `./scripts/build_install_plugins.sh`.",
+                                entry.path().display(),
+                                stem
+                            )
+                        })?;
+                        registry.add_tool(tool);
+                    }
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    eprintln!(
+                        "failed to get entry from directory {}: {err}",
+                        plugin_dir.as_ref().display()
+                    );
+                }
+            }
+        }
+
+        Ok(registry)
+    }
+
+    fn add_tool(&mut self, tool: WasmTool) {
+        println!("Adding tool: {}", tool.name());
+        self.0.insert(tool.name().to_string(), tool);
+    }
+
+    pub fn schemas(&self) -> Vec<ToolDef> {
+        self.0
+            .values()
+            .map(|tool| tool.schema().to_owned())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ToolSet for WasmToolSet {
+    fn schemas(&self) -> Vec<ToolDef> {
+        self.schemas()
+    }
+
+    async fn call_tool(&mut self, name: &str, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+        match self.0.get_mut(name) {
+            Some(tool) => tool.call(id, args).await,
+            None => Err(anyhow::anyhow!("tool not found: {name}")),
+        }
+    }
+
+    fn set_event_handler(&mut self, handler: AgentEventHandler) {
+        for (_name, tool) in self.0.iter_mut() {
+            tool.set_event_handler(handler.clone());
+        }
+    }
+
+    async fn cleanup(mut self) {
+        for (name, tool) in self.0.drain() {
+            if let Err(err) = tool.cleanup().await {
+                eprintln!("Failed to cleanup tool {name}: {err}");
+            }
+        }
+    }
+}
+
+/// Merges two slices into a deduplicated Vec, preserving insertion order with
+/// `base` entries first. Used to union global and per-plugin allowed lists.
+pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
+    let mut seen = collections::HashSet::new();
+    let mut result = Vec::with_capacity(base.len() + extra.len());
+    for s in base.iter().chain(extra.iter()) {
+        if seen.insert(s.clone()) {
+            result.push(s.clone());
+        }
+    }
+    result
+}
 
 pub struct WasmTool {
-    // Static values that don't change during tool execution
     name: String,
-    schema: ToolDef, // Would be better if this was strongly typed
-    // Mutable state for `call`
-    store: Store<crate::HarnessState>,
+    schema: ToolDef,
+    store: Store<ToolState>,
     bindings: Plugin,
     handle: ResourceAny,
 }
 
 impl WasmTool {
-    pub async fn load<P: AsRef<Path>>(
+    async fn load<P: AsRef<Path>>(
         engine: &Engine,
-        linker: &Linker<crate::HarnessState>,
+        linker: &Linker<ToolState>,
         path: P,
         allowed_paths: &[String],
         allowed_hosts: &[String],
@@ -85,11 +279,11 @@ impl WasmTool {
 
         let mut store = Store::new(
             engine,
-            crate::HarnessState {
+            ToolState {
                 wasi_ctx: wasi,
                 resource_table: ResourceTable::new(),
-                chunk_tx: None,
-                tool_call_id: String::new(),
+                current_call_id: None,
+                event_handler: None,
             },
         );
 
@@ -110,10 +304,8 @@ impl WasmTool {
         })
     }
 
-    pub async fn cleanup(mut self) -> anyhow::Result<()> {
-        self.handle.resource_drop_async(&mut self.store).await?;
-
-        Ok(())
+    fn set_event_handler(&mut self, handler: AgentEventHandler) {
+        self.store.data_mut().event_handler = Some(handler);
     }
 
     pub fn name(&self) -> &str {
@@ -124,30 +316,9 @@ impl WasmTool {
         &self.schema
     }
 
-    pub async fn enable_chunk_sender(&mut self) -> anyhow::Result<bool> {
-        let res = self
-            .bindings
-            .tool()
-            .tool()
-            .call_enable_chunk_sender(&mut self.store, self.handle)
-            .await?;
-
-        Ok(res)
-    }
-
-    /// Injects the gRPC event sender and tool call ID into the store so the
-    /// `spawn` host syscall can stream stdout lines as `ToolOutputChunk` events.
-    pub fn set_chunk_sender(
-        &mut self,
-        tx: mpsc::Sender<Result<AgentEvent, Status>>,
-        tool_call_id: String,
-    ) {
-        let state = self.store.data_mut();
-        state.chunk_tx = Some(tx);
-        state.tool_call_id = tool_call_id;
-    }
-
     pub async fn call(&mut self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
+        self.store.data_mut().current_call_id = Some(id.to_owned());
+
         let res = self
             .bindings
             .tool()
@@ -156,136 +327,13 @@ impl WasmTool {
             .await?
             .map_err(|err| anyhow::anyhow!(err))?;
 
+        self.store.data_mut().current_call_id = None;
+
         Ok(serde_json::from_str(&res)?)
     }
-}
 
-pub struct ToolRegistry(collections::HashMap<String, WasmTool>);
-
-impl ToolRegistry {
-    fn new() -> Self {
-        Self(collections::HashMap::new())
+    pub async fn cleanup(mut self) -> anyhow::Result<()> {
+        self.handle.resource_drop_async(&mut self.store).await?;
+        Ok(())
     }
-
-    pub async fn load<P: AsRef<Path>>(
-        engine: &Engine,
-        linker: &Linker<crate::HarnessState>,
-        plugin_dir: P,
-        global_allowed_paths: &[String],
-        global_allowed_hosts: &[String],
-        plugin_configs: &HashMap<String, PluginConfig>,
-    ) -> anyhow::Result<Self> {
-        let mut registry = Self::new();
-
-        let mut entries = fs::read_dir(plugin_dir.as_ref()).await.map_err(|e| {
-            let dir = plugin_dir.as_ref().display();
-            anyhow::anyhow!(
-                "Plugin directory not found: {dir}\n\n\
-                 In debug builds, run `cargo build --target wasm32-wasip2` first.\n\
-                 In release builds, run `./scripts/build_install_plugins.sh`.\n\
-                 Details: {e}"
-            )
-        })?;
-
-        loop {
-            match entries.next_entry().await {
-                Ok(Some(entry)) => {
-                    if entry.path().extension().and_then(|e| e.to_str()) == Some("wasm") {
-                        let stem = entry
-                            .path()
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let pc = plugin_configs.get(&stem);
-                        let merged_paths = merge_dedup(
-                            global_allowed_paths,
-                            pc.map(|p| p.allowed_paths.as_slice()).unwrap_or(&[]),
-                        );
-                        let merged_hosts = merge_dedup(
-                            global_allowed_hosts,
-                            pc.map(|p| p.allowed_hosts.as_slice()).unwrap_or(&[]),
-                        );
-                        let tool = WasmTool::load(
-                            engine,
-                            linker,
-                            entry.path(),
-                            &merged_paths,
-                            &merged_hosts,
-                        )
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to load plugin '{}': {e}\n\n\
-                                 In debug builds try rebuilding with 'cargo build -p {} --target wasm32-wasip2'
-                                 In release build try rebuilding with `./scripts/build_install_plugins.sh`.",
-                                entry.path().display(),
-                                stem
-                            )
-                        })?;
-                        registry.add_tool(tool);
-                    }
-                }
-                Ok(None) => break,
-                Err(err) => {
-                    eprintln!(
-                        "failed to get entry from directory {}: {err}",
-                        plugin_dir.as_ref().display()
-                    );
-                }
-            }
-        }
-
-        Ok(registry)
-    }
-
-    fn add_tool(&mut self, tool: WasmTool) {
-        println!("Adding tool: {}", tool.name());
-        self.0.insert(tool.name().to_string(), tool);
-    }
-
-    pub fn schemas(&self) -> Vec<Tool> {
-        self.0
-            .values()
-            .map(|tool| tool.schema().into())
-            .collect::<Vec<Tool>>()
-    }
-
-    pub fn get(&mut self, name: &str) -> Option<&mut WasmTool> {
-        self.0.get_mut(name)
-    }
-
-    pub async fn unload(mut self) {
-        for (name, tool) in self.0.drain() {
-            if let Err(err) = tool.cleanup().await {
-                eprintln!("Failed to cleanup tool {name}: {err}");
-            }
-        }
-    }
-}
-
-/// Merges two slices into a deduplicated Vec, preserving insertion order with
-/// `base` entries first. Used to union global and per-plugin allowed lists.
-pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
-    let mut seen = collections::HashSet::new();
-    let mut result = Vec::with_capacity(base.len() + extra.len());
-    for s in base.iter().chain(extra.iter()) {
-        if seen.insert(s.clone()) {
-            result.push(s.clone());
-        }
-    }
-    result
-}
-
-/// Builds the Wasmtime linker for tool plugins — called once at server startup.
-///
-/// Registers WASI p2 interface.
-pub fn build_tool_linker(engine: &Engine) -> anyhow::Result<Linker<HarnessState>> {
-    let mut linker: Linker<HarnessState> = Linker::new(engine);
-    // Register standard WASI p2 host functions.
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    // Register Ein-specific host functions (syscalls exposed to plugins).
-    Plugin::add_to_linker::<HarnessState, HasSelf<HarnessState>>(&mut linker, |state| state)?;
-
-    Ok(linker)
 }

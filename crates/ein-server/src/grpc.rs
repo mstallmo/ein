@@ -18,24 +18,25 @@
 //! 4. When the client closes the inbound stream, the session task exits and
 //!    plugins are unloaded.
 
-use std::mem;
 use std::sync::Arc;
 
+use ein_agent::{Agent, AgentEvent};
 use ein_plugin::model_client::{Message, Role};
+use ein_proto::ein::{
+    AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart, ToolOutputChunk,
+    agent_event,
+};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use wasmtime::Engine;
-use wasmtime::component::Linker;
 
-use crate::HarnessState;
-use crate::agent::run_agent;
 use crate::model_client::ModelClientSessionManager;
-use crate::tools::{ToolRegistry, build_tool_linker};
+use crate::tools::ToolSetManager;
 use ein_proto::ein::{
-    AgentError, AgentEvent, HistoryMessage, HistoryToolCall, ListSessionsRequest,
-    ListSessionsResponse, SessionStarted, SessionSummary, UserInput, agent_event::Event,
-    agent_server::Agent, user_input,
+    AgentError, AgentEvent as AgentEventProto, HistoryMessage, HistoryToolCall,
+    ListSessionsRequest, ListSessionsResponse, SessionStarted, SessionSummary, UserInput,
+    agent_event::Event, agent_server::Agent as AgentService, user_input,
 };
 
 /// gRPC service struct.
@@ -45,9 +46,8 @@ use ein_proto::ein::{
 /// and cached — only plugins that are actually requested ever consume memory.
 pub struct AgentServer {
     config: Arc<crate::EinConfig>,
-    engine: Engine,
     model_client_session_manager: ModelClientSessionManager,
-    tool_linker: Arc<Linker<HarnessState>>,
+    tool_set_manager: ToolSetManager,
     session_store: Arc<crate::persistence::SessionStore>,
 }
 
@@ -59,28 +59,27 @@ impl AgentServer {
     /// - Scans the model client directory to determine the fallback plugin
     ///   name; no WASM compilation happens at this point.
     pub async fn new() -> anyhow::Result<Self> {
-        let engine = Engine::default();
         let config = Arc::new(crate::EinConfig::default());
+        let engine = Engine::default();
 
         let model_client_session_manager =
             ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
-        let tool_linker = Arc::new(build_tool_linker(&engine)?);
+        let tool_set_manager = ToolSetManager::new(&config.plugin_dir, engine).await?;
         let session_store =
             Arc::new(crate::persistence::SessionStore::open(&config.db_path).await?);
 
         Ok(Self {
             config,
-            engine,
             model_client_session_manager,
-            tool_linker,
+            tool_set_manager,
             session_store,
         })
     }
 }
 
 #[tonic::async_trait]
-impl Agent for AgentServer {
-    type AgentSessionStream = ReceiverStream<Result<AgentEvent, Status>>;
+impl AgentService for AgentServer {
+    type AgentSessionStream = ReceiverStream<Result<AgentEventProto, Status>>;
 
     async fn list_sessions(
         &self,
@@ -115,12 +114,12 @@ impl Agent for AgentServer {
         request: Request<Streaming<UserInput>>,
     ) -> Result<Response<Self::AgentSessionStream>, Status> {
         let (tx, rx) = mpsc::channel(32);
+        let channel_sender = AgentEventSender::new(tx);
 
         // Clone Arcs — cheap reference-count bumps, no data is copied.
         let config = self.config.clone();
-        let engine = self.engine.clone();
         let model_client_session_manager = self.model_client_session_manager.clone();
-        let tool_linker = self.tool_linker.clone();
+        let tool_set_manager = self.tool_set_manager.clone();
         let session_store = self.session_store.clone();
 
         tokio::spawn(async move {
@@ -132,17 +131,19 @@ impl Agent for AgentServer {
                 Ok(Some(msg)) => match msg.input {
                     Some(user_input::Input::Init(cfg)) => cfg,
                     _ => {
-                        let _ = tx
-                            .send(Err(Status::invalid_argument(
+                        channel_sender
+                            .send_error(Status::invalid_argument(
                                 "First message must be SessionConfig (init variant)",
-                            )))
+                            ))
                             .await;
                         return;
                     }
                 },
                 Ok(None) => return, // client disconnected immediately
                 Err(e) => {
-                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                    channel_sender
+                        .send_error(Status::internal(e.to_string()))
+                        .await;
                     return;
                 }
             };
@@ -157,10 +158,10 @@ impl Agent for AgentServer {
                     // Reject non-UUID session IDs to catch typos early and enforce the protocol
                     // contract stated in the proto comment.
                     if uuid::Uuid::parse_str(&raw_id).is_err() {
-                        let _ = tx
-                            .send(Err(Status::invalid_argument(format!(
+                        channel_sender
+                            .send_error(Status::invalid_argument(format!(
                                 "session_id must be a valid UUID, got: {raw_id}"
-                            ))))
+                            )))
                             .await;
                         return;
                     }
@@ -172,10 +173,10 @@ impl Agent for AgentServer {
                                 "[session] failed to check session existence for {raw_id}: {e}"
                             );
 
-                            let _ = tx
-                                .send(Err(Status::internal(format!(
+                            channel_sender
+                                .send_error(Status::internal(format!(
                                     "Failed to check session: {e}"
-                                ))))
+                                )))
                                 .await;
 
                             return;
@@ -197,10 +198,8 @@ impl Agent for AgentServer {
                 {
                     eprintln!("[session] failed to persist new session {session_id}: {e}");
 
-                    let _ = tx
-                        .send(Err(Status::internal(format!(
-                            "Failed to create session: {e}"
-                        ))))
+                    channel_sender
+                        .send_error(Status::internal(format!("Failed to create session: {e}")))
                         .await;
 
                     return;
@@ -214,37 +213,29 @@ impl Agent for AgentServer {
 
             // --- Phase 2: get (or prepare) model client, then instantiate ---
 
-            let mut model_session =
-                match model_client_session_manager.new_session(&session_cfg).await {
-                    Ok(model_session) => model_session,
-                    Err(err) => {
-                        let _ = tx.send(Err(Status::internal(err.to_string()))).await;
-                        return;
-                    }
-                };
+            let model_session = match model_client_session_manager.new_session(&session_cfg).await {
+                Ok(model_session) => model_session,
+                Err(err) => {
+                    channel_sender
+                        .send_error(Status::internal(err.to_string()))
+                        .await;
+
+                    return;
+                }
+            };
 
             // --- Phase 3: load tool plugins with per-session constraints ---
             println!(
                 "[session] loading plugins from {}",
                 config.plugin_dir.display()
             );
-            let mut registry = match ToolRegistry::load(
-                &engine,
-                &tool_linker,
-                &config.plugin_dir,
-                &session_cfg.allowed_paths,
-                &session_cfg.allowed_hosts,
-                &session_cfg.plugin_configs,
-            )
-            .await
-            {
+            let tool_set = match tool_set_manager.new_tool_set(&session_cfg).await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx
-                        .send(Err(Status::internal(format!(
-                            "Failed to load plugins: {e}"
-                        ))))
+                    channel_sender
+                        .send_error(Status::internal(format!("Failed to load plugins: {e}")))
                         .await;
+
                     return;
                 }
             };
@@ -253,17 +244,17 @@ impl Agent for AgentServer {
 
             // --- Phase 4: prompt loop ---
             // Restore history if resuming; otherwise start fresh with an optional system message.
-            let mut messages: Vec<Message> = if is_resumed {
+            let messages: Vec<Message> = if is_resumed {
                 match session_store.load_messages(&session_id).await {
                     Ok(Some(msgs)) => msgs,
                     Ok(None) => vec![], // session exists but has no messages yet
                     Err(e) => {
                         eprintln!("[session] failed to load messages for {session_id}: {e}");
 
-                        let _ = tx
-                            .send(Err(Status::internal(format!(
+                        channel_sender
+                            .send_error(Status::internal(format!(
                                 "Failed to load session history: {e}"
-                            ))))
+                            )))
                             .await;
 
                         return;
@@ -294,6 +285,60 @@ impl Agent for AgentServer {
                 msgs
             };
 
+            let channel_sender_clone = channel_sender.clone();
+            let mut agent = Agent::builder_with_tool_set(model_session, tool_set)
+                .with_message_history(messages.clone())
+                .with_event_handler(move |event| {
+                    let channel_sender = channel_sender_clone.clone();
+
+                    async move {
+                        let proto_event = match event {
+                            AgentEvent::ContentDelta(content) => {
+                                Event::ContentDelta(ContentDelta { text: content })
+                            }
+                            AgentEvent::ToolCallStart {
+                                tool_call_id,
+                                tool_name,
+                                arguments,
+                            } => Event::ToolCallStart(ToolCallStart {
+                                tool_call_id,
+                                tool_name,
+                                arguments,
+                            }),
+                            AgentEvent::ToolOutputChunk {
+                                tool_call_id,
+                                output,
+                            } => Event::ToolOutputChunk(ToolOutputChunk {
+                                tool_call_id,
+                                output,
+                            }),
+                            AgentEvent::ToolCallEnd {
+                                tool_call_id,
+                                tool_name,
+                                result,
+                                metadata,
+                            } => Event::ToolCallEnd(ToolCallEnd {
+                                tool_call_id,
+                                tool_name,
+                                result,
+                                metadata,
+                            }),
+                            AgentEvent::TokenUsage {
+                                prompt_tokens,
+                                completion_tokens,
+                                total_tokens,
+                            } => Event::TokenUsage(TokenUsage {
+                                prompt_tokens: prompt_tokens as i32,
+                                completion_tokens: completion_tokens as i32,
+                                total_tokens: total_tokens as i32,
+                            }),
+                        };
+
+                        channel_sender.send_event(proto_event).await;
+                    }
+                })
+                .build();
+
             // Build history for the client when resuming an existing session.
             let history: Vec<HistoryMessage> = if is_resumed {
                 messages
@@ -312,7 +357,8 @@ impl Agent for AgentServer {
                                 .iter()
                                 .map(|tc| match tc {
                                     ein_plugin::model_client::ToolCall::Function {
-                                        function, ..
+                                        function,
+                                        ..
                                     } => HistoryToolCall {
                                         tool_name: function.name.clone(),
                                         arguments: function.arguments.clone(),
@@ -333,13 +379,11 @@ impl Agent for AgentServer {
             };
 
             // Notify the client of the assigned session ID before any agent events.
-            let _ = tx
-                .send(Ok(AgentEvent {
-                    event: Some(Event::SessionStarted(SessionStarted {
-                        session_id: session_id.clone(),
-                        resumed: is_resumed,
-                        history,
-                    })),
+            channel_sender
+                .send_event(Event::SessionStarted(SessionStarted {
+                    session_id: session_id.clone(),
+                    resumed: is_resumed,
+                    history,
                 }))
                 .await;
 
@@ -348,28 +392,31 @@ impl Agent for AgentServer {
                     Some(user_input::Input::Prompt(prompt)) => {
                         println!("[session] prompt received ({} chars)", prompt.len());
 
-                        messages.push(Message {
-                            role: Role::User,
-                            content: Some(prompt),
-                            tool_calls: None,
-                            tool_call_id: None,
-                        });
+                        let res = match agent.chat(prompt).await {
+                            Ok(content) => content.content.unwrap_or_default(),
+                            Err(err) => {
+                                eprintln!("[session] agent error: {err}");
+                                channel_sender
+                                    .send_error(Status::internal(err.to_string()))
+                                    .await;
+                                // Deliberate: we do not call save_messages here because this hard-error
+                                // path is only reached by catastrophic transport failures. Soft errors
+                                // (API errors, HTTP failures) are returned as Ok(()) by run_agent and
+                                // reach the save_messages call below.
+                                break;
+                            }
+                        };
 
-                        if let Err(e) =
-                            run_agent(&mut messages, &mut registry, &mut model_session, &tx).await
-                        {
-                            eprintln!("[session] agent error: {e}");
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                            // Deliberate: we do not call save_messages here because this hard-error
-                            // path is only reached by catastrophic transport failures. Soft errors
-                            // (API errors, HTTP failures) are returned as Ok(()) by run_agent and
-                            // reach the save_messages call below.
-                            break;
-                        }
+                        channel_sender
+                            .send_event(Event::AgentFinished(AgentFinished { final_content: res }))
+                            .await;
 
                         // Persist updated history after every agent turn.
-                        if let Err(e) = session_store.save_messages(&session_id, &messages).await {
-                            eprintln!("[session] failed to save messages for {session_id}: {e}");
+                        if let Err(err) = session_store
+                            .save_messages(&session_id, agent.messages())
+                            .await
+                        {
+                            eprintln!("[session] failed to save messages for {session_id}: {err}");
                         }
                     }
                     Some(user_input::Input::ConfigUpdate(cfg)) => {
@@ -377,19 +424,14 @@ impl Agent for AgentServer {
 
                         match model_client_session_manager.new_session(&cfg).await {
                             Ok(new_session) => {
-                                let old_session = mem::replace(&mut model_session, new_session);
-                                if let Err(err) = old_session.cleanup().await {
-                                    eprintln!("[session] Failed to cleanup model client {err}");
-                                }
+                                agent.replace_model_client(new_session).await;
 
                                 println!("[session] model client updated from config change");
                             }
                             Err(err) => {
-                                let _ = tx
-                                    .send(Ok(AgentEvent {
-                                        event: Some(Event::AgentError(AgentError {
-                                            message: format!("Config update failed: {err}"),
-                                        })),
+                                channel_sender
+                                    .send_event(Event::AgentError(AgentError {
+                                        message: format!("Config update failed: {err}"),
                                     }))
                                     .await;
                                 continue;
@@ -397,10 +439,10 @@ impl Agent for AgentServer {
                         }
                     }
                     _ => {
-                        let _ = tx
-                            .send(Err(Status::invalid_argument(
+                        channel_sender
+                            .send_error(Status::invalid_argument(
                                 "Expected prompt or config_update after init",
-                            )))
+                            ))
                             .await;
                         break;
                     }
@@ -408,12 +450,29 @@ impl Agent for AgentServer {
             }
 
             println!("[session] session ended");
-            if let Err(err) = model_session.cleanup().await {
-                eprintln!("[session] Failed to cleanup model client {err}");
-            }
-            registry.unload().await;
+            agent.cleanup().await;
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+#[derive(Clone)]
+struct AgentEventSender(mpsc::Sender<Result<AgentEventProto, Status>>);
+
+impl AgentEventSender {
+    pub fn new(tx: mpsc::Sender<Result<AgentEventProto, Status>>) -> Self {
+        Self(tx)
+    }
+
+    pub async fn send_event(&self, event: agent_event::Event) {
+        let _ = self
+            .0
+            .send(Ok(AgentEventProto { event: Some(event) }))
+            .await;
+    }
+
+    pub async fn send_error(&self, status: Status) {
+        let _ = self.0.send(Err(status)).await;
     }
 }

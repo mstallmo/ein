@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use ein_plugin::model_client::{
-    Choice, CompletionRequest, CompletionResponse, FinishReason, FunctionCall, Message, Role, Tool,
-    ToolCall, ToolFunctionParams, Usage,
+    Choice, CompletionRequest, CompletionResponse, FinishReason, FunctionCall, Message, Role,
+    ToolCall, ToolDef, ToolFunctionParams, Usage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,10 +51,10 @@ struct AnthropicTool {
     input_schema: ToolFunctionParams,
 }
 
-impl From<Tool> for AnthropicTool {
-    fn from(tool: Tool) -> Self {
+impl From<ToolDef> for AnthropicTool {
+    fn from(tool: ToolDef) -> Self {
         match tool {
-            Tool::Function { function } => Self {
+            ToolDef::Function { function } => Self {
                 name: function.name,
                 description: function.description,
                 input_schema: function.parameters,
@@ -192,8 +192,8 @@ impl From<AnthropicStopReason> for FinishReason {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicResponseUsage {
-    input_tokens: i32,
-    output_tokens: i32,
+    input_tokens: u32,
+    output_tokens: u32,
 }
 
 impl From<AnthropicResponseUsage> for Usage {
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_translate_tools() {
-        let tool: Tool = serde_json::from_value(json!({
+        let tool: ToolDef = serde_json::from_value(json!({
             "type": "function",
             "function": {
                 "name": "Read",
@@ -531,7 +531,7 @@ mod tests {
         );
 
         match tool {
-            Tool::Function { function } => {
+            ToolDef::Function { function } => {
                 assert_eq!(translated_tool.input_schema, function.parameters);
             }
         }

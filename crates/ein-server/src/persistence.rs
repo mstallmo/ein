@@ -203,12 +203,14 @@ impl SessionStore {
 
         Ok(rows
             .into_iter()
-            .map(|(id, created_at, messages_json, session_config_json)| SessionSummaryData {
-                id,
-                created_at,
-                preview: extract_preview(&messages_json),
-                session_config_json,
-            })
+            .map(
+                |(id, created_at, messages_json, session_config_json)| SessionSummaryData {
+                    id,
+                    created_at,
+                    preview: extract_preview(&messages_json),
+                    session_config_json,
+                },
+            )
             .collect())
     }
 

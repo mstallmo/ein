@@ -24,120 +24,16 @@
 //! model client plugins from `~/.ein/plugins/model_clients/`.
 //! Run `./scripts/build_install_plugins.sh` to compile and install them.
 
-mod agent;
-mod bindings;
 mod grpc;
 mod model_client;
-mod model_client_bindings;
 mod persistence;
-mod syscalls;
 mod tools;
 
 use clap::Parser;
-use ein_proto::ein::{AgentEvent, agent_server::AgentServer as AgentServiceServer};
+use ein_proto::ein::agent_server::AgentServer as AgentServiceServer;
 use grpc::AgentServer;
-use std::collections::HashSet;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
-use tonic::{Status, transport::Server};
-use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::{
-    HttpResult, WasiHttpCtx,
-    bindings::http::types::ErrorCode,
-    body::HyperOutgoingBody,
-    types::{HostFutureIncomingResponse, OutgoingRequestConfig, default_send_request},
-};
-
-/// Shared state threaded through each Wasmtime `Store` for tool plugins.
-///
-/// Every WASM plugin instance gets its own `Store<HarnessState>`, giving it
-/// an isolated WASI context and resource table.
-pub struct HarnessState {
-    pub resource_table: ResourceTable,
-    pub wasi_ctx: WasiCtx,
-    /// Set by the agent loop before each Bash tool call so the `spawn` syscall
-    /// can stream stdout lines upstream as `ToolOutputChunk` events.
-    pub chunk_tx: Option<mpsc::Sender<Result<AgentEvent, Status>>>,
-    /// The tool call ID associated with the current `spawn` invocation.
-    pub tool_call_id: String,
-}
-
-impl WasiView for HarnessState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi_ctx,
-            table: &mut self.resource_table,
-        }
-    }
-}
-
-/// Shared state threaded through each Wasmtime `Store` for model client plugins.
-///
-/// Simpler than `HarnessState` — no chunk streaming. Includes `WasiHttpCtx`
-/// so that the plugin's `wasi:http/outgoing-handler` import (used by `ein_http`
-/// via `wstd`) is satisfied by the host linker.
-///
-/// `allowed_hosts` is a set of hostnames the plugin is permitted to connect to.
-/// Requests to any other host are rejected with `ErrorCode::HttpRequestDenied`.
-pub struct ModelClientHarnessState {
-    pub resource_table: ResourceTable,
-    pub wasi_ctx: WasiCtx,
-    pub http_ctx: WasiHttpCtx,
-    pub allowed_hosts: HashSet<String>,
-}
-
-impl WasiView for ModelClientHarnessState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi_ctx,
-            table: &mut self.resource_table,
-        }
-    }
-}
-
-impl wasmtime_wasi_http::WasiHttpView for ModelClientHarnessState {
-    fn ctx(&mut self) -> &mut WasiHttpCtx {
-        &mut self.http_ctx
-    }
-
-    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
-        &mut self.resource_table
-    }
-
-    fn send_request(
-        &mut self,
-        request: hyper::Request<HyperOutgoingBody>,
-        config: OutgoingRequestConfig,
-    ) -> HttpResult<HostFutureIncomingResponse> {
-        // The WASI HTTP request model stores authority separately from the
-        // path, so wasmtime_wasi_http may not embed the host in the hyper
-        // URI. Fall back to the Host header if the URI has no host component.
-        let host = request
-            .uri()
-            .host()
-            .map(|h| h.to_string())
-            .or_else(|| {
-                request
-                    .headers()
-                    .get("host")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|h| h.split(':').next())
-                    .map(|h| h.to_string())
-            })
-            .unwrap_or_default();
-        let allowed = self.allowed_hosts.contains("*") || self.allowed_hosts.contains(&host);
-        if !allowed {
-            eprintln!(
-                "[model client] blocked request to '{host}' — not in allowlist {:?}. \
-                 Set 'base_url' in ~/.ein/config.json to allow this host.",
-                self.allowed_hosts
-            );
-            return Err(ErrorCode::HttpRequestDenied.into());
-        }
-        Ok(default_send_request(request, config))
-    }
-}
+use tonic::transport::Server;
 
 /// Top-level runtime configuration for the Ein server.
 #[derive(Debug, Clone)]

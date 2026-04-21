@@ -3,12 +3,16 @@ members = [
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
+    "crates/ein-agent",
+    "crates/ein-core",
     "packages/*",
 ]
 default-members = [
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
+    "crates/ein-agent",
+    "crates/ein-core",
 ]
 resolver = "2"
 
@@ -20,11 +24,13 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 anyhow             = "1"
+futures            = "0.3"
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
 tokio              = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "fs"] }
 tonic              = "0.12"
 prost              = "0.13"
+thiserror          = "2.0"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 wit-bindgen        = "0.53.1"
