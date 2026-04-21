@@ -16,7 +16,7 @@ use std::sync::Arc;
 // Session configuration
 // ---------------------------------------------------------------------------
 
-/// Per-session LLM configuration derived from the client's `SessionConfig`.
+/// Per-session LLM configuration.
 pub struct SessionParams {
     pub model: String,
     pub max_tokens: i32,
