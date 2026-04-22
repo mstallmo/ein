@@ -210,10 +210,14 @@ async fn try_connect(
 /// Errors on the initial connection attempt are silent (status bar already
 /// shows "Connecting…"). Errors after a live session was established are
 /// forwarded as `Disconnected(Some(...))` so the conversation shows a message.
+///
+/// `reconnect_notify` can be used to interrupt the 3 s retry delay and trigger
+/// an immediate reconnect (e.g. when the user runs `/new`).
 pub(crate) async fn connection_manager(
     server_addr: String,
     event_tx: mpsc::Sender<AppEvent>,
     session_config_cache: std::sync::Arc<tokio::sync::Mutex<Option<SessionConfig>>>,
+    reconnect_notify: std::sync::Arc<tokio::sync::Notify>,
 ) {
     loop {
         match try_connect(&server_addr, &event_tx, &session_config_cache).await {
@@ -228,6 +232,10 @@ pub(crate) async fn connection_manager(
             }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Allow /new (or other callers) to skip the retry delay.
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
+            _ = reconnect_notify.notified() => {}
+        }
     }
 }

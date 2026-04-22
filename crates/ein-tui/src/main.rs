@@ -7,7 +7,7 @@ mod connection;
 mod input;
 mod render;
 
-use crate::app::{App, AppEvent, ConnectionStatus, SessionPickerState};
+use crate::app::{App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, SessionPickerState};
 use crate::config::load_or_create_config;
 use crate::connection::{connection_manager, spawn_config_watcher, to_proto_session_config};
 use crate::input::{KeyAction, handle_key_event, handle_server_event};
@@ -108,12 +108,16 @@ async fn main() -> anyhow::Result<()> {
     let session_config_cache: std::sync::Arc<tokio::sync::Mutex<Option<SessionConfig>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
+    // Shared notify used by /new to skip the connection manager's 3 s retry delay.
+    let reconnect_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+
     // Spawn the connection manager immediately — the session picker is shown
     // as part of the first connection handshake, not before it.
     tokio::spawn(connection_manager(
         args.server_addr.clone(),
         event_tx.clone(),
         session_config_cache.clone(),
+        reconnect_notify.clone(),
     ));
 
     // Configure the terminal for raw / alternate-screen rendering.
@@ -154,6 +158,49 @@ async fn main() -> anyhow::Result<()> {
                         enable_raw_mode()?;
                         execute!(terminal.backend_mut(), EnterAlternateScreen)?;
                         terminal.clear()?;
+                    }
+                    KeyAction::NewSession => {
+                        // Build a fresh config from the current ~/.ein/config.json — the
+                        // same source "New Session" in the picker uses — rather than
+                        // recycling the cached SessionConfig from the old session.
+                        let base = to_proto_session_config(&app.current_cfg, String::new());
+
+                        // Drop the sender → closes the gRPC request stream → server
+                        // receives EOF and closes the response stream → try_connect returns.
+                        app.prompt_tx = None;
+                        app.connection_status = ConnectionStatus::Connecting;
+                        app.session_id = None;
+                        app.agent_busy = false;
+                        app.connection_error = None;
+
+                        // Clear the conversation display, keeping the welcome banner.
+                        app.messages.retain(|m| matches!(m, DisplayMessage::Header { .. }));
+                        app.scroll_offset = 0;
+                        app.auto_scroll = true;
+
+                        if let Some(cwd) = app.cwd.clone() {
+                            // Show the CWD modal — identical to the "New Session" picker
+                            // path. A bridge task receives the final config from the modal
+                            // and updates the cache before signalling the connection manager.
+                            let (tx, rx) = tokio::sync::oneshot::channel::<SessionConfig>();
+                            app.pending_cwd_prompt = Some(CwdState {
+                                cwd,
+                                base_config: base,
+                                session_tx: tx,
+                            });
+                            let cache = session_config_cache.clone();
+                            let notify = reconnect_notify.clone();
+                            tokio::spawn(async move {
+                                if let Ok(cfg) = rx.await {
+                                    *cache.lock().await = Some(cfg);
+                                    notify.notify_one();
+                                }
+                            });
+                        } else {
+                            // No CWD to ask about — update the cache and reconnect now.
+                            *session_config_cache.lock().await = Some(base);
+                            reconnect_notify.notify_one();
+                        }
                     }
                     KeyAction::Continue => {}
                 }

@@ -34,6 +34,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/clear",
         description: "Clear conversation history",
     },
+    CommandDef {
+        name: "/new",
+        description: "Start a new session",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -66,6 +70,8 @@ pub(crate) enum KeyAction {
     OpenConfig(std::path::PathBuf),
     /// No further action required; continue the event loop.
     Continue,
+    /// The user ran `/new`; drop the current session and start a fresh one.
+    NewSession,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +223,10 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
                 app.scroll_offset = 0;
                 app.auto_scroll = true;
                 return KeyAction::Continue;
+            }
+
+            if text == "/new" {
+                return KeyAction::NewSession;
             }
 
             // Reject unrecognized slash commands — display a local error, do not send to server.
