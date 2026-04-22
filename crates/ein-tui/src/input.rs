@@ -294,10 +294,10 @@ pub(crate) fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEve
         }
         Some(ServerEvent::ToolCallStart(t)) => {
             debug!(tool = %t.tool_name, "tool call start");
-            let (name, arg) = parse_tool_call(&t.tool_name, &t.arguments);
+            let arg = if t.display_arg.is_empty() { None } else { Some(t.display_arg.clone()) };
 
             app.messages.push(DisplayMessage::ToolCall {
-                name,
+                name: t.tool_name.clone(),
                 arg,
                 output_lines: vec![],
             });
@@ -395,9 +395,13 @@ pub(crate) fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEve
                                     .push(DisplayMessage::AgentText(h_msg.content.clone()));
                             }
                             for tc in &h_msg.tool_calls {
-                                let (name, arg) = parse_tool_call(&tc.tool_name, &tc.arguments);
+                                let arg = if tc.display_arg.is_empty() {
+                                    None
+                                } else {
+                                    Some(tc.display_arg.clone())
+                                };
                                 app.messages.push(DisplayMessage::ToolCall {
-                                    name,
+                                    name: tc.tool_name.clone(),
                                     arg,
                                     output_lines: vec![],
                                 });
@@ -417,34 +421,6 @@ pub(crate) fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEve
 // Helpers
 // ---------------------------------------------------------------------------
 
-// TODO: Extract this logic into the gRPC protocl and allow tools to define their
-// own display format for frontends. It will ultimately be up to the frontend
-// to decide how to display the information but the content should be defined by
-// the tool.
-/// Extracts the most useful display argument for a known tool from its raw
-/// JSON arguments string. Returns `(tool_name, Option<primary_arg>)`.
-///
-/// - `Bash`               → `command` field
-/// - `Read` / `Write` / `Edit` → `file_path` field
-/// - unknown              → no arg shown
-fn parse_tool_call(name: &str, arguments: &str) -> (String, Option<String>) {
-    let args: serde_json::Value =
-        serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
-
-    let arg = match name {
-        "Bash" => args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        "Read" | "Write" | "Edit" => args
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        _ => None,
-    };
-
-    (name.to_string(), arg)
-}
 
 /// Converts a Unicode scalar-value index into the corresponding byte index
 /// within `s`. Returns `s.len()` when `char_idx` is past the end.

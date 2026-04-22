@@ -31,4 +31,10 @@ impl ToolSet for NativeToolSet {
             None => Err(anyhow::anyhow!("tool not found: {name}")),
         }
     }
+
+    fn display_arg_for(&self, tool_name: &str, args: &str) -> Option<String> {
+        let primary_param = self.0.get(tool_name)?.primary_arg()?;
+        let val: serde_json::Value = serde_json::from_str(args).ok()?;
+        val.get(primary_param)?.as_str().map(String::from)
+    }
 }

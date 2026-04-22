@@ -186,6 +186,12 @@ impl ToolSet for WasmToolSet {
         }
     }
 
+    fn display_arg_for(&self, tool_name: &str, args: &str) -> Option<String> {
+        let primary_param = self.0.get(tool_name)?.primary_arg.as_deref()?;
+        let val: serde_json::Value = serde_json::from_str(args).ok()?;
+        val.get(primary_param)?.as_str().map(String::from)
+    }
+
     fn set_event_handler(&mut self, handler: AgentEventHandler) {
         for (_name, tool) in self.0.iter_mut() {
             tool.set_event_handler(handler.clone());
@@ -217,6 +223,7 @@ pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
 pub struct WasmTool {
     name: String,
     schema: ToolDef,
+    pub primary_arg: Option<String>,
     store: Store<ToolState>,
     bindings: Plugin,
     handle: ResourceAny,
@@ -294,10 +301,12 @@ impl WasmTool {
         let handle = accessor.call_constructor(&mut store).await?;
         let name = accessor.call_name(&mut store, handle).await?;
         let schema = accessor.call_schema(&mut store, handle).await?;
+        let primary_arg = accessor.call_primary_arg(&mut store, handle).await?;
 
         Ok(Self {
             name,
             schema: serde_json::from_str(&schema)?,
+            primary_arg,
             store,
             bindings,
             handle,

@@ -57,6 +57,10 @@ impl ToolPlugin for ReadTool {
         .build()
     }
 
+    fn primary_arg(&self) -> Option<&str> {
+        Some("file_path")
+    }
+
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         ein_plugin::tool::syscalls::log(&format!("Reading file with args: {args}"));
 

@@ -38,6 +38,10 @@ impl ToolPlugin for BashTool {
         true
     }
 
+    fn primary_arg(&self) -> Option<&str> {
+        Some("command")
+    }
+
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: BashArgs = serde_json::from_str(args)?;
 

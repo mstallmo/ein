@@ -52,6 +52,7 @@ pub enum AgentEvent {
         tool_call_id: String,
         tool_name: String,
         arguments: String,
+        display_arg: Option<String>,
     },
     ToolOutputChunk {
         tool_call_id: String,
@@ -270,10 +271,14 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
                                     info!("[agent] tool call: {} (id={})", function.name, id);
 
                                     // Notify the client that a tool is starting.
+                                    let display_arg = self
+                                        .tools
+                                        .display_arg_for(&function.name, &function.arguments);
                                     self.broadcast_event(AgentEvent::ToolCallStart {
                                         tool_call_id: id.clone(),
                                         tool_name: function.name.clone(),
                                         arguments: function.arguments.clone(),
+                                        display_arg,
                                     })
                                     .await;
 
