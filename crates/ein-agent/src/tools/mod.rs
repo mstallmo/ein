@@ -20,6 +20,12 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolDef;
     async fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
+
+    /// The name of the parameter to extract and display next to the tool name
+    /// in client UIs. Return `None` (the default) to show only the tool name.
+    fn primary_arg(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The execution boundary for tool calls.
@@ -43,5 +49,12 @@ pub trait ToolSet {
     where
         Self: Sized,
     {
+    }
+
+    /// Resolves the display argument value for a tool call by looking up the
+    /// tool's declared `primary_arg` param and extracting it from `args` JSON.
+    /// Returns `None` for unknown tools or tools without a primary arg.
+    fn display_arg_for(&self, _tool_name: &str, _args: &str) -> Option<String> {
+        None
     }
 }

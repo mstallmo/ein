@@ -82,6 +82,7 @@ message ToolCallStart {
     string tool_call_id = 1;
     string tool_name    = 2;
     string arguments    = 3;
+    string display_arg  = 4; // empty string = no display arg
 }
 
 message ToolCallEnd {
@@ -107,8 +108,9 @@ message ToolOutputChunk {
 
 // A tool call entry within a history message (used when replaying history to the client).
 message HistoryToolCall {
-    string tool_name  = 1;
-    string arguments  = 2;
+    string tool_name   = 1;
+    string arguments   = 2;
+    string display_arg = 3; // empty string = no display arg
 }
 
 // A single message from the conversation history, sent to the client on session resume.

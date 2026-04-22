@@ -57,6 +57,10 @@ pub mod __wit {
             let res = self.call(&id, &args).map_err(|err| err.to_string())?;
             serde_json::to_string(&res).map_err(|err| err.to_string())
         }
+
+        fn primary_arg(&self) -> Option<String> {
+            self.primary_arg().map(str::to_owned)
+        }
     }
 }
 
@@ -81,5 +85,11 @@ pub trait ToolPlugin: Send + Sync {
 
     fn enable_chunk_sender(&self) -> bool {
         false
+    }
+
+    /// The name of the parameter to extract and display next to the tool name
+    /// in client UIs. Return `None` (the default) to show only the tool name.
+    fn primary_arg(&self) -> Option<&str> {
+        None
     }
 }

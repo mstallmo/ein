@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow             = { workspace = true }
+chrono             = { version = "0.4", features = ["clock"] }
 clap               = { version = "4", features = ["derive"] }
 crossterm          = { version = "0.28", features = ["event-stream"] }
 notify             = "6"

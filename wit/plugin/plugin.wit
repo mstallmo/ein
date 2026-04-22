@@ -14,6 +14,7 @@ world plugin {
             schema: func() -> string;
             enable-chunk-sender: func() -> bool;
             call: func(id: string, args: string) -> result<string, string>;
+            primary-arg: func() -> option<string>;
         }
     }
 }

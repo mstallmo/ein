@@ -43,6 +43,10 @@ impl ToolPlugin for EditTool {
         .build()
     }
 
+    fn primary_arg(&self) -> Option<&str> {
+        Some("file_path")
+    }
+
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult> {
         let args: EditArgs = serde_json::from_str(args)?;
 

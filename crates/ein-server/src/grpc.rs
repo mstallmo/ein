@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use ein_agent::{Agent, AgentEvent};
+use ein_agent::{Agent, AgentEvent, tools::ToolSet};
 use ein_plugin::model_client::{Message, Role};
 use ein_proto::ein::{
     AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart, ToolOutputChunk,
@@ -285,6 +285,58 @@ impl AgentService for AgentServer {
                 msgs
             };
 
+            // Build history for the client when resuming an existing session.
+            // Must happen before tool_set is moved into the agent.
+            let history: Vec<HistoryMessage> = if is_resumed {
+                messages
+                    .iter()
+                    .filter_map(|m| match m.role {
+                        Role::User => Some(HistoryMessage {
+                            role: "user".to_string(),
+                            content: m.content.clone().unwrap_or_default(),
+                            tool_calls: vec![],
+                        }),
+                        Role::Assistant => {
+                            let tool_calls = m
+                                .tool_calls
+                                .as_deref()
+                                .unwrap_or(&[])
+                                .iter()
+                                .map(|tc| match tc {
+                                    ein_plugin::model_client::ToolCall::Function {
+                                        function,
+                                        ..
+                                    } => HistoryToolCall {
+                                        tool_name: function.name.clone(),
+                                        arguments: function.arguments.clone(),
+                                        display_arg: tool_set
+                                            .display_arg_for(&function.name, &function.arguments)
+                                            .unwrap_or_default(),
+                                    },
+                                })
+                                .collect();
+                            Some(HistoryMessage {
+                                role: "assistant".to_string(),
+                                content: m.content.clone().unwrap_or_default(),
+                                tool_calls,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+
+            // Notify the client of the assigned session ID before any agent events.
+            channel_sender
+                .send_event(Event::SessionStarted(SessionStarted {
+                    session_id: session_id.clone(),
+                    resumed: is_resumed,
+                    history,
+                }))
+                .await;
+
             let channel_sender_clone = channel_sender.clone();
             let mut agent = Agent::builder_with_tool_set(model_session, tool_set)
                 .with_message_history(messages.clone())
@@ -300,10 +352,12 @@ impl AgentService for AgentServer {
                                 tool_call_id,
                                 tool_name,
                                 arguments,
+                                display_arg,
                             } => Event::ToolCallStart(ToolCallStart {
                                 tool_call_id,
                                 tool_name,
                                 arguments,
+                                display_arg: display_arg.unwrap_or_default(),
                             }),
                             AgentEvent::ToolOutputChunk {
                                 tool_call_id,
@@ -338,54 +392,6 @@ impl AgentService for AgentServer {
                     }
                 })
                 .build();
-
-            // Build history for the client when resuming an existing session.
-            let history: Vec<HistoryMessage> = if is_resumed {
-                messages
-                    .iter()
-                    .filter_map(|m| match m.role {
-                        Role::User => Some(HistoryMessage {
-                            role: "user".to_string(),
-                            content: m.content.clone().unwrap_or_default(),
-                            tool_calls: vec![],
-                        }),
-                        Role::Assistant => {
-                            let tool_calls = m
-                                .tool_calls
-                                .as_deref()
-                                .unwrap_or(&[])
-                                .iter()
-                                .map(|tc| match tc {
-                                    ein_plugin::model_client::ToolCall::Function {
-                                        function,
-                                        ..
-                                    } => HistoryToolCall {
-                                        tool_name: function.name.clone(),
-                                        arguments: function.arguments.clone(),
-                                    },
-                                })
-                                .collect();
-                            Some(HistoryMessage {
-                                role: "assistant".to_string(),
-                                content: m.content.clone().unwrap_or_default(),
-                                tool_calls,
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
-
-            // Notify the client of the assigned session ID before any agent events.
-            channel_sender
-                .send_event(Event::SessionStarted(SessionStarted {
-                    session_id: session_id.clone(),
-                    resumed: is_resumed,
-                    history,
-                }))
-                .await;
 
             while let Ok(Some(msg)) = inbound.message().await {
                 match msg.input {
