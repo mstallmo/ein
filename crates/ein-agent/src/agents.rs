@@ -164,6 +164,93 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
         &self.messages
     }
 
+    /// Clears the in-memory message history so the next `chat` call starts
+    /// with a blank context. The caller is responsible for not persisting
+    /// the cleared state if the original history should be kept in storage.
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Summarises the current conversation using the model, then replaces the
+    /// message history with the original system message(s) plus the summary
+    /// injected as a new `System` message.
+    ///
+    /// Broadcasts a `ContentDelta` event containing the summary so the client
+    /// can display it. Saves nothing — the caller (`grpc.rs`) owns persistence.
+    ///
+    /// Returns the summary string (empty if there was nothing to compact).
+    pub async fn compact_history(&mut self) -> AgentResult<String> {
+        // Nothing to compact if there are no conversational turns yet.
+        if !self.messages.iter().any(|m| matches!(m.role, Role::User)) {
+            return Ok(String::new());
+        }
+
+        const COMPACT_PROMPT: &str =
+            "Please provide a detailed but concise summary of our conversation so far. \
+             Include: goals discussed, files viewed or modified, code written or changed, \
+             decisions made, and the current state of any ongoing tasks. \
+             This summary will replace the full conversation history as context for \
+             future turns — be thorough enough that work can continue without the original.";
+
+        // Build summarization payload: full history + summary request.
+        let mut summary_msgs = self.messages.clone();
+        summary_msgs.push(Message {
+            role: Role::User,
+            content: Some(COMPACT_PROMPT.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Single non-agentic call — no tools.
+        let resp = self
+            .model_client
+            .complete(&summary_msgs, &[])
+            .await
+            .map_err(|e| AgentError::ModelClient(e.to_string()))?;
+
+        if let Some(error_obj) = &resp.error {
+            let msg = error_obj
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown API error");
+            return Err(AgentError::ModelClient(msg.to_string()));
+        }
+
+        let summary = resp
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
+            .unwrap_or_default();
+
+        // Stream the summary to the client before modifying state.
+        if !summary.is_empty() {
+            self.broadcast_event(AgentEvent::ContentDelta(summary.clone()))
+                .await;
+        }
+
+        // Replace history: keep the original system message(s), then append the
+        // summary as a new System message. Using System role means:
+        //   - The LLM receives it as high-priority context on every future turn.
+        //   - grpc.rs filters System messages out of the HistoryMessage replay,
+        //     so on session resume the TUI shows a clean empty conversation rather
+        //     than a fake "user" bubble containing the summary text.
+        let system_msgs: Vec<Message> = std::mem::take(&mut self.messages)
+            .into_iter()
+            .filter(|m| matches!(m.role, Role::System))
+            .collect();
+
+        self.messages = system_msgs;
+        self.messages.push(Message {
+            role: Role::System,
+            content: Some(format!("Summary of prior conversation:\n\n{summary}")),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        Ok(summary)
+    }
+
     /// Runs the agent loop for one user turn.
     ///
     /// Sends `messages` to the LLM via the model client plugin, streams events

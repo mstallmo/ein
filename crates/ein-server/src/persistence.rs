@@ -214,6 +214,19 @@ impl SessionStore {
             .collect())
     }
 
+    /// Permanently delete a session and its message history.
+    ///
+    /// Returns `Ok(())` whether or not the session existed.
+    pub async fn delete_session(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("deleting session {id}"))?;
+
+        Ok(())
+    }
+
     /// Overwrite the stored message history for an existing session.
     pub async fn save_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
         let json = serde_json::to_string(messages).context("serialising messages")?;
@@ -338,5 +351,35 @@ mod tests {
             .save_messages("nonexistent", &[simple_message(Role::User, "hi")])
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_it() {
+        let store = make_store().await;
+        store.create_session("del-1", "{}").await.unwrap();
+        assert!(store.session_exists("del-1").await.unwrap());
+
+        store.delete_session("del-1").await.unwrap();
+        assert!(!store.session_exists("del-1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn delete_session_is_idempotent() {
+        let store = make_store().await;
+        // Deleting a non-existent session should not error.
+        store.delete_session("ghost").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleted_session_absent_from_list() {
+        let store = make_store().await;
+        store.create_session("keep", "{}").await.unwrap();
+        store.create_session("remove", "{}").await.unwrap();
+
+        store.delete_session("remove").await.unwrap();
+
+        let sessions = store.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "keep");
     }
 }

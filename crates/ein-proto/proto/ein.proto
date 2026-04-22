@@ -10,16 +10,27 @@ service Agent {
     rpc AgentSession(stream UserInput) returns (stream AgentEvent);
     // Returns a summary of all sessions stored on the server, newest-first.
     rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+    // Permanently deletes a session and its message history.
+    rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
 }
 
 // A single message sent by the client during a session.
-// The first message MUST be the `init` variant; all subsequent
-// messages MUST be the `prompt` variant.
+// The first message MUST be the `init` variant; subsequent messages
+// may be `prompt`, `config_update`, `clear_context`, or `compact_context`.
 message UserInput {
     oneof input {
         SessionConfig init          = 1;
         string        prompt        = 2;
         SessionConfig config_update = 3;
+        // Clears the model's in-memory context for this session.
+        // The SQLite history is preserved; only the messages sent to
+        // the LLM on the next prompt are wiped.
+        bool          clear_context = 4;
+        // Summarises the conversation using the LLM, then replaces the
+        // in-memory context and the persisted SQLite history with the
+        // summary. The server streams the summary back as ContentDelta
+        // events followed by AgentFinished.
+        bool          compact_context = 5;
     }
 }
 
@@ -143,3 +154,9 @@ message SessionSummary {
 message ListSessionsResponse {
     repeated SessionSummary sessions = 1; // Newest-first
 }
+
+message DeleteSessionRequest {
+    string session_id = 1;
+}
+
+message DeleteSessionResponse {}

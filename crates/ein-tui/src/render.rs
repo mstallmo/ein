@@ -676,7 +676,14 @@ fn render_session_picker(picker: &SessionPickerState, frame: &mut Frame) {
                 .fg(AUTOCOMPLETE_TOP_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Select", Style::default().fg(MUTED_COLOR)),
+        Span::styled(" Select  ", Style::default().fg(MUTED_COLOR)),
+        Span::styled(
+            "[Shift+D]",
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Delete", Style::default().fg(MUTED_COLOR)),
     ]));
 
     frame.render_widget(Paragraph::new(lines), inner);

@@ -34,9 +34,10 @@ use wasmtime::Engine;
 use crate::model_client::ModelClientSessionManager;
 use crate::tools::ToolSetManager;
 use ein_proto::ein::{
-    AgentError, AgentEvent as AgentEventProto, HistoryMessage, HistoryToolCall,
-    ListSessionsRequest, ListSessionsResponse, SessionStarted, SessionSummary, UserInput,
-    agent_event::Event, agent_server::Agent as AgentService, user_input,
+    AgentError, AgentEvent as AgentEventProto, DeleteSessionRequest, DeleteSessionResponse,
+    HistoryMessage, HistoryToolCall, ListSessionsRequest, ListSessionsResponse, SessionStarted,
+    SessionSummary, UserInput, agent_event::Event, agent_server::Agent as AgentService,
+    user_input,
 };
 
 /// gRPC service struct.
@@ -102,6 +103,20 @@ impl AgentService for AgentServer {
                 })
                 .collect(),
         }))
+    }
+
+    async fn delete_session(
+        &self,
+        request: Request<DeleteSessionRequest>,
+    ) -> Result<Response<DeleteSessionResponse>, Status> {
+        let id = request.into_inner().session_id;
+        self.session_store
+            .delete_session(&id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        println!("[session] deleted session {id}");
+        Ok(Response::new(DeleteSessionResponse {}))
     }
 
     /// Handles one client session.
@@ -441,6 +456,48 @@ impl AgentService for AgentServer {
                                     }))
                                     .await;
                                 continue;
+                            }
+                        }
+                    }
+                    Some(user_input::Input::ClearContext(should_clear)) => {
+                        if should_clear {
+                            // Intentionally skip save_messages — the SQLite history
+                            // is preserved; only the in-memory LLM context is wiped.
+                            println!("[session] context cleared");
+                            agent.clear_messages();
+                        }
+                    }
+                    Some(user_input::Input::CompactContext(should_compact)) => {
+                        if should_compact {
+                            println!("[session] compacting context");
+
+                            match agent.compact_history().await {
+                                Ok(_) => {
+                                    // compact_history already broadcast ContentDelta events.
+                                    channel_sender
+                                        .send_event(Event::AgentFinished(AgentFinished {
+                                            final_content: String::new(),
+                                        }))
+                                        .await;
+
+                                    // Persist the compacted history so resumed sessions stay compact.
+                                    if let Err(err) = session_store
+                                        .save_messages(&session_id, agent.messages())
+                                        .await
+                                    {
+                                        eprintln!(
+                                            "[session] failed to save compacted messages for {session_id}: {err}"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("[session] compact error: {err}");
+                                    channel_sender
+                                        .send_event(Event::AgentError(AgentError {
+                                            message: format!("Compact failed: {err}"),
+                                        }))
+                                        .await;
+                                }
                             }
                         }
                     }

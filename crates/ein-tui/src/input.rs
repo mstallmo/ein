@@ -30,6 +30,22 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/config",
         description: "Edit ~/.ein/config.json",
     },
+    CommandDef {
+        name: "/clear",
+        description: "Clear conversation history",
+    },
+    CommandDef {
+        name: "/new",
+        description: "Start a new session",
+    },
+    CommandDef {
+        name: "/sessions",
+        description: "Switch to a different session",
+    },
+    CommandDef {
+        name: "/compact",
+        description: "Summarize and compact conversation history",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -62,6 +78,12 @@ pub(crate) enum KeyAction {
     OpenConfig(std::path::PathBuf),
     /// No further action required; continue the event loop.
     Continue,
+    /// The user ran `/new`; drop the current session and start a fresh one.
+    NewSession,
+    /// The user ran `/sessions`; show the session picker to switch sessions.
+    OpenSessionPicker,
+    /// The user pressed Shift+D on an existing session in the picker; delete it.
+    DeleteSession(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +125,14 @@ async fn handle_session_picker_key(app: &mut App, key: KeyEvent) -> KeyAction {
         KeyCode::Down => {
             if picker.selected < picker.sessions.len() {
                 picker.selected += 1;
+            }
+        }
+        // Shift+D: delete the highlighted existing session (not "New Session").
+        KeyCode::Char('D') => {
+            let picker = app.pending_session_picker.as_ref().unwrap();
+            if picker.selected > 0 {
+                let session_id = picker.sessions[picker.selected - 1].id.clone();
+                return KeyAction::DeleteSession(session_id);
             }
         }
         KeyCode::Enter => {
@@ -188,40 +218,85 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
             app.autocomplete_matches.clear();
 
             // Slash commands work regardless of connection state.
-            if text == "/exit" {
-                return KeyAction::Quit;
-            }
+            match text.as_str() {
+                "/clear" => {
+                    // Tell the server to wipe its in-memory context (SQLite history is kept).
+                    if let Some(tx) = &app.prompt_tx {
+                        let _ = tx
+                            .send(UserInput {
+                                input: Some(user_input::Input::ClearContext(true)),
+                            })
+                            .await;
+                    }
+                    // Clear the local display, keeping the header banner.
+                    app.messages
+                        .retain(|m| matches!(m, DisplayMessage::Header { .. }));
+                    app.scroll_offset = 0;
+                    app.auto_scroll = true;
 
-            if text == "/config" {
-                if let Some(path) = dirs::home_dir().map(|h| h.join(".ein").join("config.json")) {
-                    return KeyAction::OpenConfig(path);
+                    return KeyAction::Continue;
                 }
-                return KeyAction::Continue;
-            }
+                "/compact" => {
+                    // Require an active connection — compact triggers a server LLM call.
+                    if app.prompt_tx.is_none() {
+                        app.messages
+                            .push(DisplayMessage::Error("Not connected to server".to_string()));
+                        app.auto_scroll = true;
+                        return KeyAction::Continue;
+                    }
+                    if let Some(tx) = &app.prompt_tx {
+                        let _ = tx
+                            .send(UserInput {
+                                input: Some(user_input::Input::CompactContext(true)),
+                            })
+                            .await;
+                    }
 
-            // Reject unrecognized slash commands — display a local error, do not send to server.
-            if text.starts_with('/') {
-                let cmd = text.split_whitespace().next().unwrap_or(&text);
-                app.messages
-                    .push(DisplayMessage::Error(format!("Unknown command: {}", cmd)));
-                app.auto_scroll = true;
-                return KeyAction::Continue;
-            }
+                    // Clear display so only the incoming summary is shown.
+                    app.messages
+                        .retain(|m| matches!(m, DisplayMessage::Header { .. }));
+                    app.scroll_offset = 0;
+                    app.auto_scroll = true;
+                    app.agent_busy = true;
 
-            // Prompts require an active connection.
-            if app.prompt_tx.is_none() {
-                return KeyAction::Continue;
-            }
+                    return KeyAction::Continue;
+                }
+                "/config" => {
+                    if let Some(path) = dirs::home_dir().map(|h| h.join(".ein").join("config.json"))
+                    {
+                        return KeyAction::OpenConfig(path);
+                    }
+                    return KeyAction::Continue;
+                }
+                "/exit" => return KeyAction::Quit,
+                "/new" => return KeyAction::NewSession,
+                "/sessions" => return KeyAction::OpenSessionPicker,
+                _ => {
+                    // Reject unrecognized slash commands — display a local error, do not send to server.
+                    if text.starts_with('/') {
+                        let cmd = text.split_whitespace().next().unwrap_or(&text);
+                        app.messages
+                            .push(DisplayMessage::Error(format!("Unknown command: {}", cmd)));
+                        app.auto_scroll = true;
+                        return KeyAction::Continue;
+                    }
 
-            app.messages.push(DisplayMessage::User(text.clone()));
-            app.auto_scroll = true;
-            app.agent_busy = true;
-            if let Some(tx) = &app.prompt_tx {
-                let _ = tx
-                    .send(UserInput {
-                        input: Some(user_input::Input::Prompt(text)),
-                    })
-                    .await;
+                    // Prompts require an active connection.
+                    if app.prompt_tx.is_none() {
+                        return KeyAction::Continue;
+                    }
+
+                    app.messages.push(DisplayMessage::User(text.clone()));
+                    app.auto_scroll = true;
+                    app.agent_busy = true;
+                    if let Some(tx) = &app.prompt_tx {
+                        let _ = tx
+                            .send(UserInput {
+                                input: Some(user_input::Input::Prompt(text)),
+                            })
+                            .await;
+                    }
+                }
             }
         }
         KeyCode::Char(c) => {
@@ -294,7 +369,11 @@ pub(crate) fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEve
         }
         Some(ServerEvent::ToolCallStart(t)) => {
             debug!(tool = %t.tool_name, "tool call start");
-            let arg = if t.display_arg.is_empty() { None } else { Some(t.display_arg.clone()) };
+            let arg = if t.display_arg.is_empty() {
+                None
+            } else {
+                Some(t.display_arg.clone())
+            };
 
             app.messages.push(DisplayMessage::ToolCall {
                 name: t.tool_name.clone(),
@@ -420,7 +499,6 @@ pub(crate) fn handle_server_event(app: &mut App, event: ein_proto::ein::AgentEve
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
 
 /// Converts a Unicode scalar-value index into the corresponding byte index
 /// within `s`. Returns `s.len()` when `char_idx` is past the end.
