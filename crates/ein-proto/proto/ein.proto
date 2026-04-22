@@ -10,6 +10,8 @@ service Agent {
     rpc AgentSession(stream UserInput) returns (stream AgentEvent);
     // Returns a summary of all sessions stored on the server, newest-first.
     rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+    // Permanently deletes a session and its message history.
+    rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
 }
 
 // A single message sent by the client during a session.
@@ -147,3 +149,9 @@ message SessionSummary {
 message ListSessionsResponse {
     repeated SessionSummary sessions = 1; // Newest-first
 }
+
+message DeleteSessionRequest {
+    string session_id = 1;
+}
+
+message DeleteSessionResponse {}

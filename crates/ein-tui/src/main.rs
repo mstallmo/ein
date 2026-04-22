@@ -9,7 +9,9 @@ mod render;
 
 use crate::app::{App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, SessionPickerState};
 use crate::config::load_or_create_config;
-use crate::connection::{connection_manager, spawn_config_watcher, to_proto_session_config};
+use crate::connection::{
+    connection_manager, delete_session, spawn_config_watcher, to_proto_session_config,
+};
 use crate::input::{KeyAction, handle_key_event, handle_server_event};
 use crate::render::render;
 use crossterm::{
@@ -202,6 +204,28 @@ async fn main() -> anyhow::Result<()> {
                             reconnect_notify.notify_one();
                         }
                     }
+                    KeyAction::OpenSessionPicker => {
+                        app.prompt_tx = None;
+                        app.connection_status = ConnectionStatus::Connecting;
+                        app.session_id = None;
+                        app.agent_busy = false;
+                        app.connection_error = None;
+                        app.messages.retain(|m| matches!(m, DisplayMessage::Header { .. }));
+                        app.scroll_offset = 0;
+                        app.auto_scroll = true;
+                        // Clear the cache so try_connect shows the session picker on reconnect.
+                        *session_config_cache.lock().await = None;
+                        reconnect_notify.notify_one();
+                    }
+                    KeyAction::DeleteSession(session_id) => {
+                        let addr = args.server_addr.clone();
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            if delete_session(&addr, session_id.clone()).await.is_ok() {
+                                let _ = tx.send(AppEvent::SessionDeleted(session_id)).await;
+                            }
+                        });
+                    }
                     KeyAction::Continue => {}
                 }
             }
@@ -246,6 +270,16 @@ async fn main() -> anyhow::Result<()> {
                             selected: 0,
                             session_tx,
                         });
+                    }
+                    AppEvent::SessionDeleted(id) => {
+                        if let Some(picker) = &mut app.pending_session_picker {
+                            picker.sessions.retain(|s| s.id != id);
+                            // Clamp selection: index 0 is always "New Session".
+                            let max_idx = picker.sessions.len();
+                            if picker.selected > max_idx {
+                                picker.selected = max_idx;
+                            }
+                        }
                     }
                 }
             }

@@ -38,6 +38,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/new",
         description: "Start a new session",
     },
+    CommandDef {
+        name: "/sessions",
+        description: "Switch to a different session",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -72,6 +76,10 @@ pub(crate) enum KeyAction {
     Continue,
     /// The user ran `/new`; drop the current session and start a fresh one.
     NewSession,
+    /// The user ran `/sessions`; show the session picker to switch sessions.
+    OpenSessionPicker,
+    /// The user pressed Shift+D on an existing session in the picker; delete it.
+    DeleteSession(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +121,14 @@ async fn handle_session_picker_key(app: &mut App, key: KeyEvent) -> KeyAction {
         KeyCode::Down => {
             if picker.selected < picker.sessions.len() {
                 picker.selected += 1;
+            }
+        }
+        // Shift+D: delete the highlighted existing session (not "New Session").
+        KeyCode::Char('D') => {
+            let picker = app.pending_session_picker.as_ref().unwrap();
+            if picker.selected > 0 {
+                let session_id = picker.sessions[picker.selected - 1].id.clone();
+                return KeyAction::DeleteSession(session_id);
             }
         }
         KeyCode::Enter => {
@@ -227,6 +243,10 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
 
             if text == "/new" {
                 return KeyAction::NewSession;
+            }
+
+            if text == "/sessions" {
+                return KeyAction::OpenSessionPicker;
             }
 
             // Reject unrecognized slash commands — display a local error, do not send to server.

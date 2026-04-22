@@ -24,6 +24,8 @@ pub(crate) enum AppEvent {
     /// Server returned the session list. The TUI shows the session picker and
     /// sends the chosen `SessionConfig` back via the oneshot sender.
     SessionsLoaded(Vec<SessionSummary>, oneshot::Sender<SessionConfig>),
+    /// A session was successfully deleted; remove it from the session picker.
+    SessionDeleted(String),
 }
 
 /// Whether the TUI currently has a live server connection.
