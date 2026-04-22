@@ -72,11 +72,13 @@ The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client stream
 
 ### Session lifecycle
 
-Each connection goes through three message types (all variants of `UserInput`):
+Each connection goes through several message types (all variants of `UserInput`):
 
 1. **Init** — the client sends a `SessionConfig` as the first message (the `init` variant). The server creates or resumes a persisted session, instantiates the model client, and loads tool plugins before starting the prompt loop.
 2. **Prompts** — subsequent messages carry the `prompt` string variant and drive `run_agent`.
 3. **Config update** — a `config_update` message (same shape as `SessionConfig`) may arrive at any time after init. The server re-instantiates the model client with the new credentials mid-session without resetting conversation history. Sent automatically by the TUI when `~/.ein/config.json` changes on disk.
+4. **Clear context** — a `clear_context` boolean message wipes the server's in-memory message history for this session without touching SQLite. Sent by the TUI's `/clear` command.
+5. **Compact context** — a `compact_context` boolean message asks the server to summarise the conversation via the LLM and replace both the in-memory history and the persisted SQLite record with the summary. The server streams the summary back as `ContentDelta` events followed by `AgentFinished`. Sent by the TUI's `/compact` command.
 
 `SessionConfig` carries:
 - `allowed_paths` — filesystem paths preopened for all WASM plugins via `WasiCtxBuilder::preopened_dir`
@@ -129,7 +131,16 @@ Legacy flat config files (with top-level `api_key`, `base_url`, `model`, `max_to
 
 ### TUI (`crates/ein-tui/`)
 
-Two files: `src/main.rs` (app logic + rendering) and `src/config.rs` (config load/save).
+Six source files under `crates/ein-tui/src/`:
+
+| File | Role |
+|------|------|
+| `main.rs` | Entry point, CLI args (`--debug`), event loop, terminal lifecycle, `KeyAction` dispatch |
+| `app.rs` | `App` state struct, `DisplayMessage` variants, `AppEvent`, `SessionPickerState`, `CwdState` |
+| `config.rs` | `ClientConfig` — load, save, and migrate `~/.ein/config.json` |
+| `connection.rs` | `connection_manager` — background reconnect loop, `ListSessions` handshake, `DeleteSession`, config file watcher |
+| `input.rs` | Slash command registry (`COMMANDS`), key event handler, server event handler |
+| `render.rs` | Full render pass — conversation pane, input area, autocomplete, session picker and CWD modals, status bar |
 
 Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
@@ -139,7 +150,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 3. **Autocomplete section** — always 3 lines tall; shows slash-command hints when input starts with `/`
 4. **Status bar** — model name (vendor prefix stripped) and cumulative token usage; shows model name only while connecting
 
-**Color palette** — all colors are named constants at the top of `main.rs`:
+**Color palette** — all colors are named constants at the top of `render.rs`:
 - `INPUT_BORDER_COLOR` — muted dark-peach/terracotta border on the input area
 - `TOOL_NAME_COLOR` — steel blue for the `▸ ToolName` tool call indicator
 - `THINKING_COLOR` — soft sky blue for the animated thinking spinner
@@ -151,13 +162,24 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 **Connecting animation**: when disconnected, a red `●` icon + grey braille spinner + italic "connecting to server" text appears in the conversation pane. If a previous session dropped with an error, the error message is shown above the spinner (replaced in-place, never appended).
 
-**CWD modal**: at startup a centered floating window (`Clear` + bordered `Block`) overlays the TUI asking whether to allow access to the current working directory. Press `Y` to add it to `allowed_paths` for the session; `N`, `Enter`, or `Esc` to skip. The connection manager is spawned only after this modal is dismissed.
+**Session picker**: shown immediately on first connection. Use `↑`/`↓` to navigate, `Enter` to select. Row 0 is always "New Session"; subsequent rows are existing sessions (newest-first). Press `Shift+D` on an existing session to delete it (sends `DeleteSession` RPC; removes the row immediately on success).
 
-**Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string; `AppEvent::ConfigChanged` carries a freshly parsed `ClientConfig` from the file watcher.
+**CWD modal**: shown after choosing "New Session" in the picker. A centered floating window asks whether to allow access to the current working directory. Press `Y` to add it to `allowed_paths` for the session; `N`, `Enter`, or `Esc` to skip.
+
+**Connection management** (`connection_manager` / `try_connect`): a background Tokio task retries the gRPC connection every 3 seconds. A `reconnect_notify` (`Arc<Notify>`) lets `/new` and `/sessions` bypass the delay. State transitions are communicated to the main loop via `AppEvent` (an mpsc channel). `AppEvent::Connected` carries the outbound `mpsc::Sender<UserInput>`; `AppEvent::Disconnected` carries an optional error string; `AppEvent::ConfigChanged` carries a freshly parsed `ClientConfig` from the file watcher. A `session_config_cache` (`Arc<Mutex<Option<SessionConfig>>>`) stores the chosen config so reconnects reuse it without reshowing the picker.
 
 **Tool call display**: `▸ ToolName  primary_arg` — for `Bash` the command is shown; for `Read`/`Write`/`Edit` the file path is shown. `Edit` additionally renders a syntax-highlighted diff (up to `DIFF_MAX_LINES` = 5 lines each of removed/added content) using `syntect` with the `base16-ocean.dark` theme.
 
-**Slash commands**: defined in the `COMMANDS` constant. Currently only `/exit`. Adding a command requires appending a `CommandDef` entry there. `/exit` works regardless of connection state.
+**Slash commands**: defined in the `COMMANDS` constant in `input.rs`. Adding a command requires appending a `CommandDef` entry there.
+
+| Command | Description |
+|---------|-------------|
+| `/exit` | Exit Ein (works regardless of connection state) |
+| `/config` | Open `~/.ein/config.json` in `$EDITOR` |
+| `/clear` | Wipe the in-memory context for this session (sends `clear_context`; SQLite history is kept; clears local display) |
+| `/new` | Drop the current session and start a fresh one (shows CWD modal, then reconnects) |
+| `/sessions` | Re-open the session picker to switch sessions |
+| `/compact` | Summarise the conversation via the LLM, replace context and SQLite history with the summary (sends `compact_context`) |
 
 **Scrolling**: `↑`/`↓` arrows scroll the conversation. `scroll_offset` counts lines up from the bottom; auto-scroll re-engages when the view reaches the bottom again.
 
