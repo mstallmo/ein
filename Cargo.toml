@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/ein",
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
@@ -8,6 +9,7 @@ members = [
     "packages/*",
 ]
 default-members = [
+    "crates/ein",
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
@@ -21,6 +23,25 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Mason Stallmo"]
 license = "Apache-2.0"
+repository = "https://github.com/mstallmo/ein"
+homepage = "https://github.com/mstallmo/ein"
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.31.0"
+ci = "github"
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+pr-run-mode = "plan"
+# Only distribute the meta-package; individual crates are excluded from releases.
+members = ["crates/ein"]
+# Allow manual edits to the generated workflow (we add a protoc install step).
+allow-dirty = ["ci"]
 
 [workspace.dependencies]
 anyhow             = "1"

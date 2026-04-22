@@ -14,6 +14,32 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop a
 └─────────────────────────────┘          └──────────────────────────────┘
 ```
 
+## Installation
+
+Install pre-built binaries with [cargo binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo install cargo-binstall
+cargo binstall --git https://github.com/mstallmo/ein ein
+```
+
+This installs both `ein-tui` (terminal UI) and `ein-server` (gRPC agent server). You can also install them individually:
+
+```bash
+cargo binstall --git https://github.com/mstallmo/ein ein-tui
+cargo binstall --git https://github.com/mstallmo/ein ein-server
+```
+
+Or download archives directly from [GitHub Releases](https://github.com/mstallmo/ein/releases).
+
+> **Note:** WASM plugins are required for the server to function and are not included in
+> binary releases. After installing, build and install plugins from source:
+> ```bash
+> git clone https://github.com/mstallmo/ein && cd ein
+> rustup target add wasm32-wasip2
+> ./scripts/build_install_plugins.sh
+> ```
+
 ## Getting Started
 
 ### Prerequisites
