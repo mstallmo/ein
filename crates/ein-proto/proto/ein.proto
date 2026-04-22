@@ -13,13 +13,17 @@ service Agent {
 }
 
 // A single message sent by the client during a session.
-// The first message MUST be the `init` variant; all subsequent
-// messages MUST be the `prompt` variant.
+// The first message MUST be the `init` variant; subsequent messages
+// may be `prompt`, `config_update`, or `clear_context`.
 message UserInput {
     oneof input {
         SessionConfig init          = 1;
         string        prompt        = 2;
         SessionConfig config_update = 3;
+        // Clears the model's in-memory context for this session.
+        // The SQLite history is preserved; only the messages sent to
+        // the LLM on the next prompt are wiped.
+        bool          clear_context = 4;
     }
 }
 

@@ -444,6 +444,14 @@ impl AgentService for AgentServer {
                             }
                         }
                     }
+                    Some(user_input::Input::ClearContext(should_clear)) => {
+                        if should_clear {
+                            // Intentionally skip save_messages — the SQLite history
+                            // is preserved; only the in-memory LLM context is wiped.
+                            println!("[session] context cleared");
+                            agent.clear_messages();
+                        }
+                    }
                     _ => {
                         channel_sender
                             .send_error(Status::invalid_argument(

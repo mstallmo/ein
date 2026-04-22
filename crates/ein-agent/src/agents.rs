@@ -164,6 +164,13 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
         &self.messages
     }
 
+    /// Clears the in-memory message history so the next `chat` call starts
+    /// with a blank context. The caller is responsible for not persisting
+    /// the cleared state if the original history should be kept in storage.
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+    }
+
     /// Runs the agent loop for one user turn.
     ///
     /// Sends `messages` to the LLM via the model client plugin, streams events

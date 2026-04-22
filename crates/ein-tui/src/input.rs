@@ -30,6 +30,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/config",
         description: "Edit ~/.ein/config.json",
     },
+    CommandDef {
+        name: "/clear",
+        description: "Clear conversation history",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -196,6 +200,22 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
                 if let Some(path) = dirs::home_dir().map(|h| h.join(".ein").join("config.json")) {
                     return KeyAction::OpenConfig(path);
                 }
+                return KeyAction::Continue;
+            }
+
+            if text == "/clear" {
+                // Tell the server to wipe its in-memory context (SQLite history is kept).
+                if let Some(tx) = &app.prompt_tx {
+                    let _ = tx
+                        .send(UserInput {
+                            input: Some(user_input::Input::ClearContext(true)),
+                        })
+                        .await;
+                }
+                // Clear the local display, keeping the header banner.
+                app.messages.retain(|m| matches!(m, DisplayMessage::Header { .. }));
+                app.scroll_offset = 0;
+                app.auto_scroll = true;
                 return KeyAction::Continue;
             }
 
