@@ -16,7 +16,7 @@ service Agent {
 
 // A single message sent by the client during a session.
 // The first message MUST be the `init` variant; subsequent messages
-// may be `prompt`, `config_update`, or `clear_context`.
+// may be `prompt`, `config_update`, `clear_context`, or `compact_context`.
 message UserInput {
     oneof input {
         SessionConfig init          = 1;
@@ -26,6 +26,11 @@ message UserInput {
         // The SQLite history is preserved; only the messages sent to
         // the LLM on the next prompt are wiped.
         bool          clear_context = 4;
+        // Summarises the conversation using the LLM, then replaces the
+        // in-memory context and the persisted SQLite history with the
+        // summary. The server streams the summary back as ContentDelta
+        // events followed by AgentFinished.
+        bool          compact_context = 5;
     }
 }
 
