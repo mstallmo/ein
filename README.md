@@ -327,6 +327,30 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. Th
 | `tools.rs` | `ToolRegistry` + `WasmTool` — loads and calls WASM plugins |
 | `syscalls.rs` | Host functions exposed to WASM tool plugins (spawn, log, …) |
 
+## Releasing
+
+Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/). Only the `crates/ein` meta-package is distributed — it includes both the `ein-tui` and `ein-server` binaries.
+
+**1. Bump the version**
+
+Edit `version` in `[workspace.package]` in `Cargo.toml`. All crates inherit this value.
+
+**2. Commit and tag**
+
+```bash
+git commit -am "chore: bump version to vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+**3. CI publishes the release**
+
+Pushing a tag matching `vX.Y.Z` triggers `.github/workflows/release.yml`, which builds multi-platform binaries (macOS arm64/x86, Linux arm64/x86, Windows x86) and publishes a GitHub Release with archives and checksums.
+
+Once the release is live, `cargo binstall --git https://github.com/mstallmo/ein ein` will resolve the new binaries automatically — no crates.io publish required.
+
+> **Note:** `release.yml` contains a manually-added `protoc` install step. If you ever regenerate the workflow with `cargo dist generate`, preserve that step — it is required for the proto compilation during the build.
+
 ## License
 
 Ein is licensed under the [Apache License, Version 2.0](LICENSE).
