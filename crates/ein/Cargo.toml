@@ -1,0 +1,24 @@
+[package]
+name = "ein"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AI agent framework — installs both ein-tui and ein-server"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow     = { workspace = true }
+clap       = { version = "4", features = ["derive"] }
+ein-server = { path = "../ein-server" }
+ein-tui    = { path = "../ein-tui" }
+tokio      = { workspace = true }
+
+[[bin]]
+name = "ein-server"
+path = "src/bin/ein_server.rs"
+
+[[bin]]
+name = "ein-tui"
+path = "src/bin/ein_tui.rs"

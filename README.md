@@ -14,6 +14,32 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop a
 └─────────────────────────────┘          └──────────────────────────────┘
 ```
 
+## Installation
+
+Install pre-built binaries with [cargo binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```bash
+cargo install cargo-binstall
+cargo binstall --git https://github.com/mstallmo/ein ein
+```
+
+This installs both `ein-tui` (terminal UI) and `ein-server` (gRPC agent server). You can also install them individually:
+
+```bash
+cargo binstall --git https://github.com/mstallmo/ein ein-tui
+cargo binstall --git https://github.com/mstallmo/ein ein-server
+```
+
+Or download archives directly from [GitHub Releases](https://github.com/mstallmo/ein/releases).
+
+> **Note:** WASM plugins are required for the server to function and are not included in
+> binary releases. After installing, build and install plugins from source:
+> ```bash
+> git clone https://github.com/mstallmo/ein && cd ein
+> rustup target add wasm32-wasip2
+> ./scripts/build_install_plugins.sh
+> ```
+
 ## Getting Started
 
 ### Prerequisites
@@ -300,6 +326,30 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. Th
 | `persistence.rs` | `SessionStore` — SQLite-backed session storage; create, save, and load message history |
 | `tools.rs` | `ToolRegistry` + `WasmTool` — loads and calls WASM plugins |
 | `syscalls.rs` | Host functions exposed to WASM tool plugins (spawn, log, …) |
+
+## Releasing
+
+Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/). Only the `crates/ein` meta-package is distributed — it includes both the `ein-tui` and `ein-server` binaries.
+
+**1. Bump the version**
+
+Edit `version` in `[workspace.package]` in `Cargo.toml`. All crates inherit this value.
+
+**2. Commit and tag**
+
+```bash
+git commit -am "chore: bump version to vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+```
+
+**3. CI publishes the release**
+
+Pushing a tag matching `vX.Y.Z` triggers `.github/workflows/release.yml`, which builds multi-platform binaries (macOS arm64/x86, Linux arm64/x86, Windows x86) and publishes a GitHub Release with archives and checksums.
+
+Once the release is live, `cargo binstall --git https://github.com/mstallmo/ein ein` will resolve the new binaries automatically — no crates.io publish required.
+
+> **Note:** `release.yml` contains a manually-added `protoc` install step. If you ever regenerate the workflow with `cargo dist generate`, preserve that step — it is required for the proto compilation during the build.
 
 ## License
 
