@@ -36,8 +36,7 @@ use crate::tools::ToolSetManager;
 use ein_proto::ein::{
     AgentError, AgentEvent as AgentEventProto, DeleteSessionRequest, DeleteSessionResponse,
     HistoryMessage, HistoryToolCall, ListSessionsRequest, ListSessionsResponse, SessionStarted,
-    SessionSummary, UserInput, agent_event::Event, agent_server::Agent as AgentService,
-    user_input,
+    SessionSummary, UserInput, agent_event::Event, agent_server::Agent as AgentService, user_input,
 };
 
 /// gRPC service struct.

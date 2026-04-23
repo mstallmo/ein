@@ -9,7 +9,10 @@
 mod grpc;
 mod model_client;
 mod persistence;
+mod plugins;
 mod tools;
+
+pub use plugins::install_plugins;
 
 use ein_proto::ein::agent_server::AgentServer as AgentServiceServer;
 use grpc::AgentServer;
@@ -55,6 +58,16 @@ impl Default for EinConfig {
 
 /// Start the Ein gRPC server and block until it exits.
 pub async fn run(port: u16) -> anyhow::Result<()> {
+    // In release builds, auto-install plugins if none are present.
+    if !cfg!(debug_assertions) {
+        let config = EinConfig::default();
+
+        if plugins::plugins_missing(&config.plugin_dir).await {
+            println!("No plugins found, downloading from GitHub release...");
+            plugins::install_plugins(None).await?;
+        }
+    }
+
     let addr = format!("0.0.0.0:{port}").parse()?;
 
     let server = AgentServer::new().await?;

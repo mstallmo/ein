@@ -2,8 +2,8 @@
 // Copyright 2026 Mason Stallmo
 
 use ein_proto::ein::{
-    DeleteSessionRequest, ListSessionsRequest, SessionConfig, UserInput,
-    agent_client::AgentClient, user_input,
+    DeleteSessionRequest, ListSessionsRequest, SessionConfig, UserInput, agent_client::AgentClient,
+    user_input,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -210,7 +210,9 @@ async fn try_connect(
 ///
 /// Returns `Ok(())` on success; errors are logged by the caller.
 pub(crate) async fn delete_session(server_addr: &str, session_id: String) -> anyhow::Result<()> {
-    let channel = Channel::from_shared(server_addr.to_string())?.connect().await?;
+    let channel = Channel::from_shared(server_addr.to_string())?
+        .connect()
+        .await?;
     let mut client = AgentClient::new(channel);
     client
         .delete_session(tonic::Request::new(DeleteSessionRequest { session_id }))
