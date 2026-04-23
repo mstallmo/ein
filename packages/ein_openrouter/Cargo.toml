@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[package.metadata.ein]
+plugin_type = "model_client"
+
 [lib]
 crate-type = ["cdylib"]
 

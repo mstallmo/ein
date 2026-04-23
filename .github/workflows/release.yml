@@ -164,6 +164,60 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  # Build and package all WASM plugins (platform-agnostic, built once)
+  build-plugins:
+    name: build-plugins
+    needs:
+      - plan
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build WASM plugins
+        run: |
+          cargo metadata --no-deps --format-version 1 | \
+            jq -r '.packages[] |
+              select(.manifest_path | test("/packages/")) |
+              select(any(.targets[]; .kind[] == "cdylib")) |
+              .name' | \
+            while read -r pkg; do
+              echo "Building $pkg..."
+              cargo build --release -p "$pkg" --target wasm32-wasip2
+            done
+      - name: Package plugins
+        run: |
+          VERSION="${{ needs.plan.outputs.tag }}"
+          ARCHIVE="ein-plugins-${VERSION}.tar.gz"
+          mkdir -p dist-plugins/tools dist-plugins/model_clients
+
+          cargo metadata --no-deps --format-version 1 | \
+            jq -r '.packages[] |
+              select(.manifest_path | test("/packages/")) |
+              select(any(.targets[]; .kind[] == "cdylib")) |
+              select(.metadata.ein.plugin_type != null) |
+              [.name, .metadata.ein.plugin_type] | @tsv' | \
+            while IFS=$'\t' read -r name plugin_type; do
+              cp "target/wasm32-wasip2/release/${name}.wasm" "dist-plugins/${plugin_type}s/"
+            done
+
+          tar -czf "$ARCHIVE" -C dist-plugins .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+      - name: Upload plugin archive artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-build-plugins
+          path: ${{ env.ARCHIVE }}
+
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
@@ -215,8 +269,9 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - build-plugins
+    # Only run if we're "publishing", and only if plan, local, global, and plugins didn't fail (skipped is fine)
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.build-plugins.result == 'skipped' || needs.build-plugins.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
