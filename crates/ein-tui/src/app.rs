@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use ein_proto::ein::{AgentEvent, SessionConfig, SessionSummary, UserInput};
+use ein_proto::ein::{AgentEvent, PluginSourceStatus, SessionConfig, SessionSummary, UserInput};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::ClientConfig;
@@ -26,6 +26,10 @@ pub(crate) enum AppEvent {
     SessionsLoaded(Vec<SessionSummary>, oneshot::Sender<SessionConfig>),
     /// A session was successfully deleted; remove it from the session picker.
     SessionDeleted(String),
+    /// The server returned plugin source statuses for the plugin modal.
+    PluginStatusLoaded(Vec<PluginSourceStatus>),
+    /// A plugin install RPC completed; carries success flag and a status message.
+    PluginInstallResult { success: bool, message: String },
 }
 
 /// Whether the TUI currently has a live server connection.
@@ -70,6 +74,20 @@ pub(crate) enum DisplayMessage {
 // ---------------------------------------------------------------------------
 // Session picker / CWD prompt state
 // ---------------------------------------------------------------------------
+
+/// State for the plugin manager modal, opened via `/plugins`.
+pub(crate) struct PluginModalState {
+    /// Plugin sources and their install status, fetched from the server.
+    pub(crate) sources: Vec<PluginSourceStatus>,
+    /// Currently highlighted row index.
+    pub(crate) selected: usize,
+    /// True while an install RPC is in flight.
+    pub(crate) installing: bool,
+    /// True while the initial status check RPC is in flight.
+    pub(crate) loading: bool,
+    /// Last install result message, shown beneath the source list.
+    pub(crate) status_message: Option<String>,
+}
 
 /// State for the session picker modal shown on first connection.
 pub(crate) struct SessionPickerState {
@@ -161,6 +179,8 @@ pub(crate) struct App {
     pub(crate) current_cfg: ClientConfig,
     /// Session UUID assigned by the server, shown in the status bar.
     pub(crate) session_id: Option<String>,
+    /// When `Some`, the plugin manager modal is visible.
+    pub(crate) pending_plugin_modal: Option<PluginModalState>,
 }
 
 impl App {
@@ -190,6 +210,7 @@ impl App {
             cwd,
             current_cfg,
             session_id: None,
+            pending_plugin_modal: None,
         }
     }
 }

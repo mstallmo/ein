@@ -7,6 +7,14 @@ use std::{io, path::Path};
 use tar::Archive;
 use tokio::{fs, task};
 
+const DEFAULT_TOOL_PLUGINS: &[&str] = &["ein_bash", "ein_read", "ein_write", "ein_edit"];
+const DEFAULT_MODEL_CLIENT_PLUGINS: &[&str] = &[
+    "ein_openrouter",
+    "ein_anthropic",
+    "ein_openai",
+    "ein_ollama",
+];
+
 pub async fn install_plugins(version: Option<String>) -> Result<()> {
     let ver = version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let ver = ver.trim_start_matches('v');
@@ -47,6 +55,23 @@ pub async fn install_plugins(version: Option<String>) -> Result<()> {
 
     println!("Plugins installed successfully");
     Ok(())
+}
+
+/// Returns `true` if all default tool and model-client plugins are present.
+pub async fn check_default_plugins(plugin_dir: &Path, model_client_dir: &Path) -> bool {
+    for name in DEFAULT_TOOL_PLUGINS {
+        if !plugin_dir.join(format!("{name}.wasm")).exists() {
+            return false;
+        }
+    }
+
+    for name in DEFAULT_MODEL_CLIENT_PLUGINS {
+        if !model_client_dir.join(format!("{name}.wasm")).exists() {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Returns true if the tools plugin directory has no `.wasm` files.

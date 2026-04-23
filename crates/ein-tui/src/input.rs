@@ -46,6 +46,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/compact",
         description: "Summarize and compact conversation history",
     },
+    CommandDef {
+        name: "/plugins",
+        description: "Manage installed plugins",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -84,6 +88,10 @@ pub(crate) enum KeyAction {
     OpenSessionPicker,
     /// The user pressed Shift+D on an existing session in the picker; delete it.
     DeleteSession(String),
+    /// Open the plugin manager modal and fetch status from the server.
+    OpenPluginModal,
+    /// User selected a plugin source to install/update; `source_id` identifies it.
+    InstallPlugin { source_id: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +109,11 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyAction 
         return KeyAction::Quit;
     }
 
+    // While the plugin modal is visible, route all key events to it.
+    if app.pending_plugin_modal.is_some() {
+        return handle_plugin_modal_key(app, key);
+    }
+
     // While the session picker is visible, route all key events to it.
     if app.pending_session_picker.is_some() {
         return handle_session_picker_key(app, key).await;
@@ -112,6 +125,55 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyAction 
     }
 
     handle_normal_key(app, key).await
+}
+
+fn handle_plugin_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
+    // While an async operation is in flight, only Esc is allowed.
+    let busy = app
+        .pending_plugin_modal
+        .as_ref()
+        .is_some_and(|m| m.loading || m.installing);
+    if busy {
+        if key.code == KeyCode::Esc {
+            app.pending_plugin_modal = None;
+        }
+        return KeyAction::Continue;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.pending_plugin_modal = None;
+        }
+        KeyCode::Up => {
+            if let Some(modal) = app.pending_plugin_modal.as_mut() {
+                if modal.selected > 0 {
+                    modal.selected -= 1;
+                }
+            }
+        }
+        KeyCode::Down => {
+            if let Some(modal) = app.pending_plugin_modal.as_mut() {
+                if modal.selected + 1 < modal.sources.len() {
+                    modal.selected += 1;
+                }
+            }
+        }
+        KeyCode::Enter => {
+            let source_id = app
+                .pending_plugin_modal
+                .as_ref()
+                .and_then(|m| m.sources.get(m.selected))
+                .map(|s| s.id.clone())
+                .unwrap_or_else(|| "default".to_string());
+            if let Some(modal) = app.pending_plugin_modal.as_mut() {
+                modal.installing = true;
+                modal.status_message = None;
+            }
+            return KeyAction::InstallPlugin { source_id };
+        }
+        _ => {}
+    }
+    KeyAction::Continue
 }
 
 async fn handle_session_picker_key(app: &mut App, key: KeyEvent) -> KeyAction {
@@ -270,6 +332,7 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
                 }
                 "/exit" => return KeyAction::Quit,
                 "/new" => return KeyAction::NewSession,
+                "/plugins" => return KeyAction::OpenPluginModal,
                 "/sessions" => return KeyAction::OpenSessionPicker,
                 _ => {
                     // Reject unrecognized slash commands — display a local error, do not send to server.
