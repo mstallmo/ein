@@ -17,7 +17,7 @@ use syntect::{
 };
 use tracing::debug;
 
-use crate::app::{App, ConnectionStatus, DisplayMessage, SessionPickerState};
+use crate::app::{App, ConnectionStatus, DisplayMessage, PluginModalState, SessionPickerState};
 use crate::input::COMMANDS;
 
 // ---------------------------------------------------------------------------
@@ -303,6 +303,11 @@ pub(crate) fn render(app: &App, frame: &mut Frame) {
         frame.render_widget(List::new(items), layout[2]);
     }
 
+    // --- Plugin modal ---
+    if let Some(modal) = &app.pending_plugin_modal {
+        render_plugin_modal(modal, app.tick, frame);
+    }
+
     // --- Session picker (overlays everything, shown before CWD modal) ---
     if let Some(picker) = &app.pending_session_picker {
         render_session_picker(picker, frame);
@@ -545,6 +550,133 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let y = area.y + area.height.saturating_sub(height) / 2;
 
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+/// Renders the plugin manager modal over the entire terminal.
+fn render_plugin_modal(modal: &PluginModalState, tick: u64, frame: &mut Frame) {
+    let frame_idx = (tick as usize) % SPINNER.len();
+
+    // Calculate height: borders(2) + top blank(1) + content rows + bottom blank(1) + hints(1)
+    // plus an optional status row and its trailing blank (2 more).
+    let content_rows: u16 = if modal.loading || modal.installing {
+        1
+    } else {
+        modal.sources.len().max(1) as u16
+    };
+    let status_rows: u16 = if modal.status_message.is_some() { 2 } else { 0 };
+    let modal_height = 2 + 1 + content_rows + 1 + 1 + status_rows;
+    let modal_width = (frame.area().width * 7 / 10)
+        .max(50)
+        .min(frame.area().width);
+    let area = centered_rect(modal_width, modal_height, frame.area());
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Plugins ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(INPUT_BORDER_COLOR));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+
+    if modal.loading {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} ", SPINNER[frame_idx]),
+                Style::default().fg(THINKING_COLOR),
+            ),
+            Span::styled(
+                "Loading...",
+                Style::default()
+                    .fg(MUTED_COLOR)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    } else if modal.installing {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} ", SPINNER[frame_idx]),
+                Style::default().fg(THINKING_COLOR),
+            ),
+            Span::styled(
+                "Installing...",
+                Style::default()
+                    .fg(THINKING_COLOR)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    } else if modal.sources.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No plugin sources available",
+            Style::default().fg(MUTED_COLOR),
+        )));
+    } else {
+        for (i, source) in modal.sources.iter().enumerate() {
+            let is_sel = modal.selected == i;
+            let cursor = if is_sel { "> " } else { "  " };
+            let (checkmark, check_color) = if source.installed {
+                ("✓", Color::Green)
+            } else {
+                ("○", MUTED_COLOR)
+            };
+            let name_style = if is_sel {
+                Style::default().fg(AUTOCOMPLETE_TOP_COLOR)
+            } else {
+                Style::default().fg(MUTED_COLOR)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(cursor, name_style),
+                Span::styled(checkmark, Style::default().fg(check_color)),
+                Span::styled(format!("  {}", source.display_name), name_style),
+            ]));
+        }
+    }
+
+    lines.push(Line::raw(""));
+
+    if let Some(msg) = &modal.status_message {
+        let msg_color =
+            if msg.to_lowercase().contains("fail") || msg.to_lowercase().contains("error") {
+                DISCONNECTED_COLOR
+            } else {
+                Color::Green
+            };
+        lines.push(Line::from(Span::styled(
+            format!("  {msg}"),
+            Style::default().fg(msg_color),
+        )));
+        lines.push(Line::raw(""));
+    }
+
+    if !modal.loading {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[↑↓]",
+                Style::default()
+                    .fg(AUTOCOMPLETE_TOP_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Navigate  ", Style::default().fg(MUTED_COLOR)),
+            Span::styled(
+                "[Enter]",
+                Style::default()
+                    .fg(AUTOCOMPLETE_TOP_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Install/Update  ", Style::default().fg(MUTED_COLOR)),
+            Span::styled(
+                "[Esc]",
+                Style::default()
+                    .fg(AUTOCOMPLETE_TOP_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Close", Style::default().fg(MUTED_COLOR)),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Renders the startup modal asking the user whether to allow access to the

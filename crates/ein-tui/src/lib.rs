@@ -12,10 +12,13 @@ mod connection;
 mod input;
 mod render;
 
-use crate::app::{App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, SessionPickerState};
+use crate::app::{
+    App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, PluginModalState, SessionPickerState,
+};
 use crate::config::load_or_create_config;
 use crate::connection::{
-    connection_manager, delete_session, spawn_config_watcher, to_proto_session_config,
+    check_plugins, connection_manager, delete_session, install_plugins, spawn_config_watcher,
+    to_proto_session_config,
 };
 use crate::input::{KeyAction, handle_key_event, handle_server_event};
 use crate::render::render;
@@ -146,7 +149,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
         tokio::select! {
             _ = ticker.tick() => {
-                if app.agent_busy || matches!(app.connection_status, ConnectionStatus::Connecting) {
+                let plugin_busy = app
+                    .pending_plugin_modal
+                    .as_ref()
+                    .is_some_and(|m| m.loading || m.installing);
+                if app.agent_busy
+                    || matches!(app.connection_status, ConnectionStatus::Connecting)
+                    || plugin_busy
+                {
                     app.tick = app.tick.wrapping_add(1);
                 }
             }
@@ -232,6 +242,45 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             }
                         });
                     }
+                    KeyAction::OpenPluginModal => {
+                        app.pending_plugin_modal = Some(PluginModalState {
+                            sources: vec![],
+                            selected: 0,
+                            installing: false,
+                            loading: true,
+                            status_message: None,
+                        });
+                        let addr = args.server_addr.clone();
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            let sources = check_plugins(&addr).await.unwrap_or_default();
+                            let _ = tx.send(AppEvent::PluginStatusLoaded(sources)).await;
+                        });
+                    }
+                    KeyAction::InstallPlugin { source_id } => {
+                        let addr = args.server_addr.clone();
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            match install_plugins(&addr, source_id).await {
+                                Ok(resp) => {
+                                    let _ = tx
+                                        .send(AppEvent::PluginInstallResult {
+                                            success: resp.success,
+                                            message: resp.message,
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    let _ = tx
+                                        .send(AppEvent::PluginInstallResult {
+                                            success: false,
+                                            message: e.to_string(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        });
+                    }
                     KeyAction::Continue => {}
                 }
             }
@@ -284,6 +333,24 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             let max_idx = picker.sessions.len();
                             if picker.selected > max_idx {
                                 picker.selected = max_idx;
+                            }
+                        }
+                    }
+                    AppEvent::PluginStatusLoaded(sources) => {
+                        if let Some(modal) = &mut app.pending_plugin_modal {
+                            modal.sources = sources;
+                            modal.loading = false;
+                        }
+                    }
+                    AppEvent::PluginInstallResult { success, message } => {
+                        if let Some(modal) = &mut app.pending_plugin_modal {
+                            modal.installing = false;
+                            modal.status_message = Some(message);
+                            // Optimistically mark the source as installed on success.
+                            if success {
+                                for source in &mut modal.sources {
+                                    source.installed = true;
+                                }
                             }
                         }
                     }

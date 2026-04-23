@@ -2,8 +2,9 @@
 // Copyright 2026 Mason Stallmo
 
 use ein_proto::ein::{
-    DeleteSessionRequest, ListSessionsRequest, SessionConfig, UserInput,
-    agent_client::AgentClient, user_input,
+    CheckPluginsRequest, DeleteSessionRequest, InstallPluginsRequest, InstallPluginsResponse,
+    ListSessionsRequest, PluginSourceStatus, SessionConfig, UserInput, agent_client::AgentClient,
+    user_input,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
@@ -206,11 +207,40 @@ async fn try_connect(
     }
 }
 
+/// Opens a short-lived connection and fetches plugin source statuses.
+pub(crate) async fn check_plugins(server_addr: &str) -> anyhow::Result<Vec<PluginSourceStatus>> {
+    let channel = Channel::from_shared(server_addr.to_string())?
+        .connect()
+        .await?;
+    let mut client = AgentClient::new(channel);
+    let resp = client
+        .check_plugins(tonic::Request::new(CheckPluginsRequest {}))
+        .await?;
+    Ok(resp.into_inner().sources)
+}
+
+/// Opens a short-lived connection and requests plugin installation for `source_id`.
+pub(crate) async fn install_plugins(
+    server_addr: &str,
+    source_id: String,
+) -> anyhow::Result<InstallPluginsResponse> {
+    let channel = Channel::from_shared(server_addr.to_string())?
+        .connect()
+        .await?;
+    let mut client = AgentClient::new(channel);
+    let resp = client
+        .install_plugins(tonic::Request::new(InstallPluginsRequest { source_id }))
+        .await?;
+    Ok(resp.into_inner())
+}
+
 /// Opens a short-lived connection and deletes a session by ID.
 ///
 /// Returns `Ok(())` on success; errors are logged by the caller.
 pub(crate) async fn delete_session(server_addr: &str, session_id: String) -> anyhow::Result<()> {
-    let channel = Channel::from_shared(server_addr.to_string())?.connect().await?;
+    let channel = Channel::from_shared(server_addr.to_string())?
+        .connect()
+        .await?;
     let mut client = AgentClient::new(channel);
     client
         .delete_session(tonic::Request::new(DeleteSessionRequest { session_id }))

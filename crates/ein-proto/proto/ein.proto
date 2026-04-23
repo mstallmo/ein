@@ -12,6 +12,10 @@ service Agent {
     rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
     // Permanently deletes a session and its message history.
     rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+    // Returns the list of plugin sources with their installation status.
+    rpc CheckPlugins(CheckPluginsRequest) returns (CheckPluginsResponse);
+    // Downloads and installs plugins for the given source.
+    rpc InstallPlugins(InstallPluginsRequest) returns (InstallPluginsResponse);
 }
 
 // A single message sent by the client during a session.
@@ -160,3 +164,26 @@ message DeleteSessionRequest {
 }
 
 message DeleteSessionResponse {}
+
+message CheckPluginsRequest {}
+
+// The installation status of a single plugin source.
+message PluginSourceStatus {
+    string id           = 1;
+    string display_name = 2;
+    bool   installed    = 3;
+}
+
+message CheckPluginsResponse {
+    repeated PluginSourceStatus sources = 1;
+}
+
+message InstallPluginsRequest {
+    // Identifier for the plugin source to install (e.g. "default").
+    string source_id = 1;
+}
+
+message InstallPluginsResponse {
+    bool   success = 1;
+    string message = 2;
+}

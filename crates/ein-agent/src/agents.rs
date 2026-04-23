@@ -185,8 +185,7 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
             return Ok(String::new());
         }
 
-        const COMPACT_PROMPT: &str =
-            "Please provide a detailed but concise summary of our conversation so far. \
+        const COMPACT_PROMPT: &str = "Please provide a detailed but concise summary of our conversation so far. \
              Include: goals discussed, files viewed or modified, code written or changed, \
              decisions made, and the current state of any ongoing tasks. \
              This summary will replace the full conversation history as context for \

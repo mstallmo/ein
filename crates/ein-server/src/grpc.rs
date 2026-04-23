@@ -34,10 +34,11 @@ use wasmtime::Engine;
 use crate::model_client::ModelClientSessionManager;
 use crate::tools::ToolSetManager;
 use ein_proto::ein::{
-    AgentError, AgentEvent as AgentEventProto, DeleteSessionRequest, DeleteSessionResponse,
-    HistoryMessage, HistoryToolCall, ListSessionsRequest, ListSessionsResponse, SessionStarted,
-    SessionSummary, UserInput, agent_event::Event, agent_server::Agent as AgentService,
-    user_input,
+    AgentError, AgentEvent as AgentEventProto, CheckPluginsRequest, CheckPluginsResponse,
+    DeleteSessionRequest, DeleteSessionResponse, HistoryMessage, HistoryToolCall,
+    InstallPluginsRequest, InstallPluginsResponse, ListSessionsRequest, ListSessionsResponse,
+    PluginSourceStatus, SessionStarted, SessionSummary, UserInput, agent_event::Event,
+    agent_server::Agent as AgentService, user_input,
 };
 
 /// gRPC service struct.
@@ -117,6 +118,46 @@ impl AgentService for AgentServer {
 
         println!("[session] deleted session {id}");
         Ok(Response::new(DeleteSessionResponse {}))
+    }
+
+    async fn check_plugins(
+        &self,
+        _request: Request<CheckPluginsRequest>,
+    ) -> Result<Response<CheckPluginsResponse>, Status> {
+        let installed = crate::plugins::check_default_plugins(
+            &self.config.plugin_dir,
+            &self.config.model_client_dir,
+        )
+        .await;
+        Ok(Response::new(CheckPluginsResponse {
+            sources: vec![PluginSourceStatus {
+                id: "default".to_string(),
+                display_name: "Default plugins".to_string(),
+                installed,
+            }],
+        }))
+    }
+
+    async fn install_plugins(
+        &self,
+        request: Request<InstallPluginsRequest>,
+    ) -> Result<Response<InstallPluginsResponse>, Status> {
+        let source_id = request.into_inner().source_id;
+        match source_id.as_str() {
+            "default" => match crate::plugins::install_plugins(None).await {
+                Ok(()) => Ok(Response::new(InstallPluginsResponse {
+                    success: true,
+                    message: "Default plugins installed successfully".to_string(),
+                })),
+                Err(e) => Ok(Response::new(InstallPluginsResponse {
+                    success: false,
+                    message: e.to_string(),
+                })),
+            },
+            _ => Err(Status::invalid_argument(format!(
+                "Unknown plugin source: {source_id}"
+            ))),
+        }
     }
 
     /// Handles one client session.
