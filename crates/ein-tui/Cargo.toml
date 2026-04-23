@@ -11,9 +11,6 @@ homepage.workspace = true
 name = "ein_tui"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ein-tui"
-path = "src/main.rs"
 
 [dependencies]
 anyhow             = { workspace = true }

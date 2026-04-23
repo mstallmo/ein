@@ -42,10 +42,10 @@ Credentials are configured in `~/.ein/config.json` (created on first TUI launch)
 
 ```bash
 # Terminal 1 — start the server (no env vars needed)
-cargo run -p ein-server
+cargo run --bin ein-server
 
 # Terminal 2 — start the TUI (connects to localhost:50051 by default)
-cargo run -p ein-tui
+cargo run --bin ein-tui
 
 # Optional: connect to a non-default server address
 cargo run -p ein-tui -- http://my-server:50051

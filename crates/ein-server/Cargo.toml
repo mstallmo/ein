@@ -11,9 +11,6 @@ homepage.workspace = true
 name = "ein_server"
 path = "src/lib.rs"
 
-[[bin]]
-name = "ein-server"
-path = "src/main.rs"
 
 [dependencies]
 anyhow             = { workspace = true }

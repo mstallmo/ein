@@ -128,25 +128,25 @@ Add your model backend credentials to `~/.ein/config.json` (created automaticall
 Start the server in one terminal:
 
 ```bash
-cargo run -p ein-server
+cargo run --bin ein-server
 ```
 
 Start the TUI client in another:
 
 ```bash
-cargo run -p ein-tui
+cargo run --bin ein-tui
 ```
 
 The TUI connects to `localhost:50051` by default. To connect to a different address:
 
 ```bash
-cargo run -p ein-tui -- http://my-server:50051
+cargo run --bin ein-tui -- http://my-server:50051
 ```
 
 To enable debug logging to `~/.ein/tui.log`:
 
 ```bash
-cargo run -p ein-tui -- --debug
+cargo run --bin ein-tui -- --debug
 ```
 
 On first connection a **session picker** modal appears. Use `↑`/`↓` to navigate, `Enter` to select:
