@@ -79,4 +79,5 @@ impl ToolPlugin for WriteTool {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_tool!(WriteTool);

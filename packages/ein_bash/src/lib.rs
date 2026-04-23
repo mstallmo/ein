@@ -58,4 +58,5 @@ impl ToolPlugin for BashTool {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_tool!(BashTool);

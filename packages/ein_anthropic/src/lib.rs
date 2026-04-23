@@ -105,4 +105,5 @@ impl ModelClientPlugin for AnthropicPlugin {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_model_client!(AnthropicPlugin);

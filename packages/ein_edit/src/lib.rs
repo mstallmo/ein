@@ -76,4 +76,5 @@ impl ToolPlugin for EditTool {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_tool!(EditTool);

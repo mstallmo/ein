@@ -160,4 +160,5 @@ impl ModelClientPlugin for OllamaPlugin {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_model_client!(OllamaPlugin);

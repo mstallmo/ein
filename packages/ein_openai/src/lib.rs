@@ -127,6 +127,7 @@ impl ModelClientPlugin for OpenAIPlugin {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_model_client!(OpenAIPlugin);
 
 #[cfg(test)]

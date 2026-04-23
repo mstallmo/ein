@@ -128,4 +128,5 @@ impl ModelClientPlugin for OpenRouterPlugin {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_model_client!(OpenRouterPlugin);

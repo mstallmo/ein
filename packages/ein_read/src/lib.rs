@@ -92,4 +92,5 @@ impl ToolPlugin for ReadTool {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 ein_plugin::export_tool!(ReadTool);
