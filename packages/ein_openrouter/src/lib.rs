@@ -63,20 +63,7 @@ impl ModelClientPlugin for OpenRouterPlugin {
             .bearer_auth(&self.config.api_key)
             .json(&req)?
             .send()
-            .map_err(|e| {
-                let is_local = self.config.base_url.contains("localhost")
-                    || self.config.base_url.contains("127.0.0.1");
-                if is_local {
-                    anyhow!(
-                        "Could not connect to {}.\n\
-                         Is the server running? (e.g. `ollama serve`)\n\
-                         Details: {e}",
-                        self.config.base_url
-                    )
-                } else {
-                    anyhow!("Could not connect to {}: {e}", self.config.base_url)
-                }
-            })?;
+            .map_err(|e| anyhow!("Could not connect to {}: {e}", self.config.base_url))?;
 
         match resp.status {
             401 => {
@@ -98,19 +85,13 @@ impl ModelClientPlugin for OpenRouterPlugin {
             404 => {
                 let msg = extract_api_error(&resp.body)
                     .unwrap_or_else(|| "Resource not found".to_owned());
-                let is_local = self.config.base_url.contains("localhost")
-                    || self.config.base_url.contains("127.0.0.1");
-                let hint = if is_local {
-                    "\n\nThe model may not be downloaded yet. Try:\n  ollama pull <model-name>"
-                        .to_owned()
-                } else {
-                    String::new()
-                };
-                return Err(anyhow!("{msg}{hint}"));
+                return Err(anyhow!("{msg}"));
             }
             s if !(200..300).contains(&s) => {
-                let msg = extract_api_error(&resp.body).unwrap_or_else(|| format!("HTTP {s}"));
-                return Err(anyhow!("API error: {msg}"));
+                let status = format!("HTTP {s}");
+                let msg = extract_api_error(&resp.body).unwrap_or_default();
+
+                return Err(anyhow!("Status {status}. API error: {msg}"));
             }
             _ => {}
         }
