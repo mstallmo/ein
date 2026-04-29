@@ -81,3 +81,60 @@ impl ToolPlugin for WriteTool {
 
 #[cfg(target_arch = "wasm32")]
 ein_plugin::export_tool!(WriteTool);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn tool() -> WriteTool {
+        WriteTool::new()
+    }
+
+    fn call(path: &str, content: &str) -> anyhow::Result<ToolResult> {
+        let args = serde_json::json!({ "file_path": path, "content": content }).to_string();
+        tool().call("id", &args)
+    }
+
+    #[test]
+    fn write_creates_file_with_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+        call(path.to_str().unwrap(), "hello world").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn write_overwrites_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+        call(path.to_str().unwrap(), "first").unwrap();
+        call(path.to_str().unwrap(), "second").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+    }
+
+    #[test]
+    fn write_creates_parent_directories() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a").join("b").join("c").join("file.txt");
+        call(path.to_str().unwrap(), "nested").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nested");
+    }
+
+    #[test]
+    fn write_empty_content_creates_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.txt");
+        call(path.to_str().unwrap(), "").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn write_returns_success_message_with_byte_count_and_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f.txt");
+        let result = call(path.to_str().unwrap(), "abc").unwrap();
+        assert!(result.content.contains('3'), "expected byte count in: {}", result.content);
+        assert!(result.content.contains(path.to_str().unwrap()), "expected path in: {}", result.content);
+    }
+}

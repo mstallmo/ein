@@ -237,6 +237,98 @@ pub(crate) async fn install_plugins(
     Ok(resp.into_inner())
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::config::{ClientConfig, PluginConfig};
+
+    #[test]
+    fn to_proto_maps_basic_fields() {
+        let cfg = ClientConfig {
+            allowed_paths: vec!["/home/user".to_string()],
+            allowed_hosts: vec!["openrouter.ai".to_string()],
+            model_client_name: "ein_openrouter".to_string(),
+            plugin_configs: HashMap::new(),
+        };
+
+        let proto = to_proto_session_config(&cfg, "sess-123".to_string());
+
+        assert_eq!(proto.allowed_paths, vec!["/home/user"]);
+        assert_eq!(proto.allowed_hosts, vec!["openrouter.ai"]);
+        assert_eq!(proto.model_client_name, "ein_openrouter");
+        assert_eq!(proto.session_id, "sess-123");
+    }
+
+    #[test]
+    fn to_proto_empty_plugin_configs_produces_empty_map() {
+        let proto = to_proto_session_config(&ClientConfig::default(), "id".to_string());
+        assert!(proto.plugin_configs.is_empty());
+    }
+
+    #[test]
+    fn to_proto_serializes_plugin_params_as_json() {
+        let mut params = HashMap::new();
+        params.insert("api_key".to_string(), serde_json::json!("sk-test"));
+        params.insert("model".to_string(), serde_json::json!("my-model"));
+
+        let mut plugin_configs = HashMap::new();
+        plugin_configs.insert(
+            "ein_openrouter".to_string(),
+            PluginConfig { params, ..Default::default() },
+        );
+
+        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let proto = to_proto_session_config(&cfg, "id".to_string());
+
+        let pc = &proto.plugin_configs["ein_openrouter"];
+        let parsed: serde_json::Value = serde_json::from_str(&pc.params_json).unwrap();
+        assert_eq!(parsed["api_key"].as_str().unwrap(), "sk-test");
+        assert_eq!(parsed["model"].as_str().unwrap(), "my-model");
+    }
+
+    #[test]
+    fn to_proto_maps_plugin_allowed_paths_and_hosts() {
+        let mut plugin_configs = HashMap::new();
+        plugin_configs.insert(
+            "Bash".to_string(),
+            PluginConfig {
+                allowed_paths: vec!["/tmp".to_string()],
+                allowed_hosts: vec!["example.com".to_string()],
+                params: HashMap::new(),
+            },
+        );
+
+        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let proto = to_proto_session_config(&cfg, "id".to_string());
+
+        let pc = &proto.plugin_configs["Bash"];
+        assert_eq!(pc.allowed_paths, vec!["/tmp"]);
+        assert_eq!(pc.allowed_hosts, vec!["example.com"]);
+    }
+
+    #[test]
+    fn to_proto_multiple_plugin_configs_all_present() {
+        let mut plugin_configs = HashMap::new();
+        plugin_configs.insert("ein_openrouter".to_string(), PluginConfig::default());
+        plugin_configs.insert("Bash".to_string(), PluginConfig::default());
+        plugin_configs.insert("Read".to_string(), PluginConfig::default());
+
+        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let proto = to_proto_session_config(&cfg, "id".to_string());
+
+        assert_eq!(proto.plugin_configs.len(), 3);
+        assert!(proto.plugin_configs.contains_key("ein_openrouter"));
+        assert!(proto.plugin_configs.contains_key("Bash"));
+        assert!(proto.plugin_configs.contains_key("Read"));
+    }
+}
+
 /// Opens a short-lived connection and deletes a session by ID.
 ///
 /// Returns `Ok(())` on success; errors are logged by the caller.

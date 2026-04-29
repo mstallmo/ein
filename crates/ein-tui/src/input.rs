@@ -846,3 +846,222 @@ mod state {
         assert_eq!(app.cumulative_tokens, 42);
     }
 }
+
+#[cfg(test)]
+mod key_events {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::app::{DisplayMessage, test_helpers::make_app};
+
+    use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    // ---------------------------------------------------------------------------
+    // Ctrl-C and slash commands
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ctrl_c_always_quits() {
+        let mut app = make_app("m");
+        let action = handle_key_event(&mut app, ctrl(KeyCode::Char('c'))).await;
+        assert!(matches!(action, KeyAction::Quit));
+    }
+
+    #[tokio::test]
+    async fn exit_command_quits() {
+        let mut app = make_app("m");
+        app.input = "/exit".to_string();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::Quit));
+    }
+
+    #[tokio::test]
+    async fn new_command_returns_new_session() {
+        let mut app = make_app("m");
+        app.input = "/new".to_string();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::NewSession));
+    }
+
+    #[tokio::test]
+    async fn sessions_command_opens_picker() {
+        let mut app = make_app("m");
+        app.input = "/sessions".to_string();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::OpenSessionPicker));
+    }
+
+    #[tokio::test]
+    async fn plugins_command_opens_plugin_modal() {
+        let mut app = make_app("m");
+        app.input = "/plugins".to_string();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::OpenPluginModal));
+    }
+
+    #[tokio::test]
+    async fn unknown_slash_command_shows_error_message() {
+        let mut app = make_app("m");
+        app.input = "/doesnotexist".to_string();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::Continue));
+        assert!(
+            app.messages.iter().any(|m| matches!(m, DisplayMessage::Error(_))),
+            "unknown slash command must add an Error message"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_with_empty_input_is_a_no_op() {
+        let mut app = make_app("m");
+        let initial_msg_count = app.messages.len();
+        let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        assert!(matches!(action, KeyAction::Continue));
+        assert_eq!(app.messages.len(), initial_msg_count);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Text input editing
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn char_key_appends_to_input_and_advances_cursor() {
+        let mut app = make_app("m");
+        let _ = handle_key_event(&mut app, key(KeyCode::Char('h'))).await;
+        let _ = handle_key_event(&mut app, key(KeyCode::Char('i'))).await;
+        assert_eq!(app.input, "hi");
+        assert_eq!(app.cursor_pos, 2);
+    }
+
+    #[tokio::test]
+    async fn backspace_removes_last_char() {
+        let mut app = make_app("m");
+        app.input = "hello".to_string();
+        app.cursor_pos = 5;
+        let _ = handle_key_event(&mut app, key(KeyCode::Backspace)).await;
+        assert_eq!(app.input, "hell");
+        assert_eq!(app.cursor_pos, 4);
+    }
+
+    #[tokio::test]
+    async fn backspace_at_start_of_input_is_a_no_op() {
+        let mut app = make_app("m");
+        app.input = "hi".to_string();
+        app.cursor_pos = 0;
+        let _ = handle_key_event(&mut app, key(KeyCode::Backspace)).await;
+        assert_eq!(app.input, "hi");
+        assert_eq!(app.cursor_pos, 0);
+    }
+
+    #[tokio::test]
+    async fn enter_clears_input_after_command() {
+        let mut app = make_app("m");
+        app.input = "/exit".to_string();
+        let _ = handle_key_event(&mut app, key(KeyCode::Enter)).await;
+        // input was consumed (taken) by the Enter handler
+        assert!(app.input.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Scrolling
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn up_arrow_increments_scroll_offset_and_disables_autoscroll() {
+        let mut app = make_app("m");
+        app.auto_scroll = true;
+        app.scroll_offset = 0;
+        let _ = handle_key_event(&mut app, key(KeyCode::Up)).await;
+        assert_eq!(app.scroll_offset, 1);
+        assert!(!app.auto_scroll);
+    }
+
+    #[tokio::test]
+    async fn down_arrow_at_bottom_re_enables_autoscroll() {
+        let mut app = make_app("m");
+        app.scroll_offset = 0;
+        app.auto_scroll = false;
+        let _ = handle_key_event(&mut app, key(KeyCode::Down)).await;
+        assert!(app.auto_scroll);
+    }
+
+    #[tokio::test]
+    async fn down_arrow_above_bottom_decrements_scroll_offset() {
+        let mut app = make_app("m");
+        app.scroll_offset = 5;
+        let _ = handle_key_event(&mut app, key(KeyCode::Down)).await;
+        assert_eq!(app.scroll_offset, 4);
+    }
+
+    // ---------------------------------------------------------------------------
+    // update_autocomplete
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn autocomplete_activates_for_slash_prefix() {
+        let mut app = make_app("m");
+        app.input = "/ex".to_string();
+        update_autocomplete(&mut app);
+        assert!(app.autocomplete_active);
+        assert!(!app.autocomplete_matches.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_slash_alone_matches_all_commands() {
+        let mut app = make_app("m");
+        app.input = "/".to_string();
+        update_autocomplete(&mut app);
+        assert!(app.autocomplete_active);
+        assert_eq!(app.autocomplete_matches.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn autocomplete_deactivates_for_non_slash_input() {
+        let mut app = make_app("m");
+        app.input = "hello".to_string();
+        app.autocomplete_active = true;
+        app.autocomplete_matches = vec![0];
+        update_autocomplete(&mut app);
+        assert!(!app.autocomplete_active);
+        assert!(app.autocomplete_matches.is_empty());
+    }
+
+    #[test]
+    fn autocomplete_no_match_leaves_inactive() {
+        let mut app = make_app("m");
+        app.input = "/zzz".to_string();
+        update_autocomplete(&mut app);
+        assert!(!app.autocomplete_active);
+    }
+
+    // ---------------------------------------------------------------------------
+    // char_to_byte_idx (private helper, accessible from same-file test module)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn char_to_byte_idx_ascii() {
+        assert_eq!(char_to_byte_idx("hello", 0), 0);
+        assert_eq!(char_to_byte_idx("hello", 3), 3);
+        assert_eq!(char_to_byte_idx("hello", 5), 5);
+    }
+
+    #[test]
+    fn char_to_byte_idx_multibyte() {
+        let s = "héllo"; // é is 2 bytes (U+00E9)
+        assert_eq!(char_to_byte_idx(s, 0), 0);
+        assert_eq!(char_to_byte_idx(s, 1), 1); // 'h'
+        assert_eq!(char_to_byte_idx(s, 2), 3); // after 'é' (2 bytes)
+    }
+
+    #[test]
+    fn char_to_byte_idx_past_end_returns_len() {
+        assert_eq!(char_to_byte_idx("hi", 99), 2);
+    }
+}

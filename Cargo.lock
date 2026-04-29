@@ -1094,6 +1094,7 @@ dependencies = [
  "ein_plugin",
  "serde",
  "serde_json",
+ "tempfile",
  "wit-bindgen 0.53.1",
 ]
 
@@ -1160,6 +1161,7 @@ dependencies = [
  "ein_plugin",
  "serde",
  "serde_json",
+ "tempfile",
  "wit-bindgen 0.53.1",
 ]
 
@@ -1171,6 +1173,7 @@ dependencies = [
  "ein_plugin",
  "serde",
  "serde_json",
+ "tempfile",
  "wit-bindgen 0.53.1",
 ]
 

@@ -51,6 +51,47 @@ fn default_base_url() -> String {
     "http://localhost:11434/v1".to_string()
 }
 
+fn inject_num_ctx(body: &mut serde_json::Value, num_ctx: Option<u32>) {
+    if let Some(n) = num_ctx {
+        body["options"] = serde_json::json!({ "num_ctx": n });
+    }
+}
+
+fn map_http_error(status: u16, body: &str, model: &str) -> Option<anyhow::Error> {
+    match status {
+        401 => {
+            let msg = extract_api_error(body).unwrap_or_else(|| "Unauthorized".to_owned());
+            Some(anyhow!(
+                "{msg}\n\n\
+                 Most local Ollama instances do not require authentication.\n\
+                 If your deployment uses a bearer token, set it in \
+                 ~/.ein/config.json under \
+                 plugin_configs.ein_ollama.params.api_key"
+            ))
+        }
+        402 => {
+            let msg =
+                extract_api_error(body).unwrap_or_else(|| "Payment required".to_owned());
+            Some(anyhow!("{msg}"))
+        }
+        404 => {
+            let msg =
+                extract_api_error(body).unwrap_or_else(|| "Model not found".to_owned());
+            Some(anyhow!(
+                "{msg}\n\n\
+                 The model may not be downloaded yet. Run:\n\
+                   ollama pull {model}\n\
+                 To list available models: ollama list"
+            ))
+        }
+        s if !(200..300).contains(&s) => {
+            let msg = extract_api_error(body).unwrap_or_else(|| format!("HTTP {s}"));
+            Some(anyhow!("API error: {msg}"))
+        }
+        _ => None,
+    }
+}
+
 pub struct OllamaPlugin {
     config: OllamaConfig,
 }
@@ -77,10 +118,10 @@ impl ModelClientPlugin for OllamaPlugin {
         // Inject Ollama-specific options (e.g. num_ctx) alongside the standard
         // fields if configured.
         let mut body = serde_json::to_value(&req)?;
-        if let Some(num_ctx) = self.config.num_ctx {
-            eprintln!("[ollama] setting num_ctx={num_ctx}");
-            body["options"] = serde_json::json!({ "num_ctx": num_ctx });
+        if self.config.num_ctx.is_some() {
+            eprintln!("[ollama] setting num_ctx={}", self.config.num_ctx.unwrap());
         }
+        inject_num_ctx(&mut body, self.config.num_ctx);
 
         let mut req_builder = HttpRequest::post(url);
         if let Some(key) = &self.config.api_key {
@@ -112,39 +153,8 @@ impl ModelClientPlugin for OllamaPlugin {
             }
         })?;
 
-        match resp.status {
-            401 => {
-                let msg =
-                    extract_api_error(&resp.body).unwrap_or_else(|| "Unauthorized".to_owned());
-                return Err(anyhow!(
-                    "{msg}\n\n\
-                     Most local Ollama instances do not require authentication.\n\
-                     If your deployment uses a bearer token, set it in \
-                     ~/.ein/config.json under \
-                     plugin_configs.ein_ollama.params.api_key"
-                ));
-            }
-            402 => {
-                let msg =
-                    extract_api_error(&resp.body).unwrap_or_else(|| "Payment required".to_owned());
-                return Err(anyhow!("{msg}"));
-            }
-            404 => {
-                let msg =
-                    extract_api_error(&resp.body).unwrap_or_else(|| "Model not found".to_owned());
-                return Err(anyhow!(
-                    "{msg}\n\n\
-                     The model may not be downloaded yet. Run:\n\
-                       ollama pull {}\n\
-                     To list available models: ollama list",
-                    req.model
-                ));
-            }
-            s if !(200..300).contains(&s) => {
-                let msg = extract_api_error(&resp.body).unwrap_or_else(|| format!("HTTP {s}"));
-                return Err(anyhow!("API error: {msg}"));
-            }
-            _ => {}
+        if let Some(e) = map_http_error(resp.status, &resp.body, &req.model) {
+            return Err(e);
         }
 
         // Validate the body parses as CompletionResponse before returning.
@@ -162,3 +172,164 @@ impl ModelClientPlugin for OllamaPlugin {
 
 #[cfg(target_arch = "wasm32")]
 ein_plugin::export_model_client!(OllamaPlugin);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ein_plugin::model_client::CompletionResponse;
+    use serde_json::json;
+
+    // ---------------------------------------------------------------------------
+    // extract_api_error
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn extract_api_error_present() {
+        let body = r#"{"error": {"message": "model not loaded", "type": "not_found"}}"#;
+        assert_eq!(
+            extract_api_error(body).as_deref(),
+            Some("model not loaded")
+        );
+    }
+
+    #[test]
+    fn extract_api_error_missing_error_key() {
+        assert!(extract_api_error(r#"{"choices": []}"#).is_none());
+    }
+
+    #[test]
+    fn extract_api_error_malformed_json() {
+        assert!(extract_api_error("not json").is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // OllamaConfig deserialization
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn config_default_base_url() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(cfg.base_url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn config_absent_api_key_is_none() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(cfg.api_key.is_none());
+    }
+
+    #[test]
+    fn config_empty_api_key_treated_as_none() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({"api_key": ""})).unwrap();
+        assert!(cfg.api_key.is_none());
+    }
+
+    #[test]
+    fn config_valid_api_key() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({"api_key": "tok"})).unwrap();
+        assert_eq!(cfg.api_key.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn config_num_ctx_absent_is_none() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({})).unwrap();
+        assert!(cfg.num_ctx.is_none());
+    }
+
+    #[test]
+    fn config_num_ctx_set() {
+        let cfg: OllamaConfig = serde_json::from_value(json!({"num_ctx": 16384})).unwrap();
+        assert_eq!(cfg.num_ctx, Some(16384));
+    }
+
+    // ---------------------------------------------------------------------------
+    // inject_num_ctx
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn num_ctx_injected_into_body() {
+        let mut body = json!({"model": "llama3", "messages": []});
+        inject_num_ctx(&mut body, Some(8192));
+        assert_eq!(body["options"]["num_ctx"], 8192);
+    }
+
+    #[test]
+    fn num_ctx_not_injected_when_absent() {
+        let mut body = json!({"model": "llama3", "messages": []});
+        inject_num_ctx(&mut body, None);
+        assert!(body.get("options").is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // map_http_error
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn map_http_error_401_contains_api_key_hint() {
+        let err = map_http_error(401, "{}", "llama3").unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("api_key"), "expected api_key hint in: {msg}");
+    }
+
+    #[test]
+    fn map_http_error_401_includes_api_message() {
+        let body = r#"{"error": {"message": "Invalid token"}}"#;
+        let err = map_http_error(401, body, "llama3").unwrap();
+        assert!(err.to_string().contains("Invalid token"));
+    }
+
+    #[test]
+    fn map_http_error_404_suggests_ollama_pull() {
+        let err = map_http_error(404, "{}", "mistral").unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("ollama pull"), "expected 'ollama pull' in: {msg}");
+        assert!(msg.contains("mistral"), "expected model name in: {msg}");
+    }
+
+    #[test]
+    fn map_http_error_404_passes_through_api_message() {
+        let body = r#"{"error": {"message": "model 'qwen' not found"}}"#;
+        let err = map_http_error(404, body, "qwen").unwrap();
+        assert!(err.to_string().contains("model 'qwen' not found"));
+    }
+
+    #[test]
+    fn map_http_error_other_non_2xx() {
+        let err = map_http_error(503, "{}", "llama3").unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("503"), "expected status code in: {msg}");
+    }
+
+    #[test]
+    fn map_http_error_2xx_returns_none() {
+        assert!(map_http_error(200, "{}", "llama3").is_none());
+        assert!(map_http_error(201, "{}", "llama3").is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Response body validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn valid_completion_response_parses() {
+        let body = r#"{
+            "id": "ollama-gen-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Hello!"}
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        }"#;
+        let resp: Result<CompletionResponse, _> = serde_json::from_str(body);
+        assert!(resp.is_ok(), "expected valid response to parse: {:?}", resp);
+    }
+
+    #[test]
+    fn invalid_response_body_returns_error() {
+        let resp: Result<CompletionResponse, _> = serde_json::from_str("not valid json");
+        assert!(resp.is_err());
+    }
+}
