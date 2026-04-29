@@ -971,17 +971,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "ein"
-version = "0.1.6"
-dependencies = [
- "anyhow",
- "clap",
- "ein-server",
- "ein-tui",
- "tokio",
-]
-
-[[package]]
 name = "ein-agent"
 version = "0.1.6"
 dependencies = [
@@ -1051,11 +1040,14 @@ dependencies = [
  "crossterm",
  "dirs",
  "ein-proto",
+ "flate2",
  "notify",
  "ratatui",
+ "reqwest",
  "serde",
  "serde_json",
  "syntect",
+ "tar",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -3050,9 +3042,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "reqwest"
-version = "0.13.2"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab3f43e3283ab1488b624b44b0e988d0acea0b3214e694730a055cb6b2efa801"
+checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
 dependencies = [
  "base64",
  "bytes",

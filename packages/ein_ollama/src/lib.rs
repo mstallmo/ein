@@ -70,13 +70,11 @@ fn map_http_error(status: u16, body: &str, model: &str) -> Option<anyhow::Error>
             ))
         }
         402 => {
-            let msg =
-                extract_api_error(body).unwrap_or_else(|| "Payment required".to_owned());
+            let msg = extract_api_error(body).unwrap_or_else(|| "Payment required".to_owned());
             Some(anyhow!("{msg}"))
         }
         404 => {
-            let msg =
-                extract_api_error(body).unwrap_or_else(|| "Model not found".to_owned());
+            let msg = extract_api_error(body).unwrap_or_else(|| "Model not found".to_owned());
             Some(anyhow!(
                 "{msg}\n\n\
                  The model may not be downloaded yet. Run:\n\
@@ -186,10 +184,7 @@ mod tests {
     #[test]
     fn extract_api_error_present() {
         let body = r#"{"error": {"message": "model not loaded", "type": "not_found"}}"#;
-        assert_eq!(
-            extract_api_error(body).as_deref(),
-            Some("model not loaded")
-        );
+        assert_eq!(extract_api_error(body).as_deref(), Some("model not loaded"));
     }
 
     #[test]
@@ -282,7 +277,10 @@ mod tests {
     fn map_http_error_404_suggests_ollama_pull() {
         let err = map_http_error(404, "{}", "mistral").unwrap();
         let msg = err.to_string();
-        assert!(msg.contains("ollama pull"), "expected 'ollama pull' in: {msg}");
+        assert!(
+            msg.contains("ollama pull"),
+            "expected 'ollama pull' in: {msg}"
+        );
         assert!(msg.contains("mistral"), "expected model name in: {msg}");
     }
 

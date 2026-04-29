@@ -913,7 +913,9 @@ mod key_events {
         let action = handle_key_event(&mut app, key(KeyCode::Enter)).await;
         assert!(matches!(action, KeyAction::Continue));
         assert!(
-            app.messages.iter().any(|m| matches!(m, DisplayMessage::Error(_))),
+            app.messages
+                .iter()
+                .any(|m| matches!(m, DisplayMessage::Error(_))),
             "unknown slash command must add an Error message"
         );
     }

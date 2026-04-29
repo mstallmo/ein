@@ -280,10 +280,16 @@ mod tests {
         let mut plugin_configs = HashMap::new();
         plugin_configs.insert(
             "ein_openrouter".to_string(),
-            PluginConfig { params, ..Default::default() },
+            PluginConfig {
+                params,
+                ..Default::default()
+            },
         );
 
-        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let cfg = ClientConfig {
+            plugin_configs,
+            ..Default::default()
+        };
         let proto = to_proto_session_config(&cfg, "id".to_string());
 
         let pc = &proto.plugin_configs["ein_openrouter"];
@@ -304,7 +310,10 @@ mod tests {
             },
         );
 
-        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let cfg = ClientConfig {
+            plugin_configs,
+            ..Default::default()
+        };
         let proto = to_proto_session_config(&cfg, "id".to_string());
 
         let pc = &proto.plugin_configs["Bash"];
@@ -319,7 +328,10 @@ mod tests {
         plugin_configs.insert("Bash".to_string(), PluginConfig::default());
         plugin_configs.insert("Read".to_string(), PluginConfig::default());
 
-        let cfg = ClientConfig { plugin_configs, ..Default::default() };
+        let cfg = ClientConfig {
+            plugin_configs,
+            ..Default::default()
+        };
         let proto = to_proto_session_config(&cfg, "id".to_string());
 
         assert_eq!(proto.plugin_configs.len(), 3);
