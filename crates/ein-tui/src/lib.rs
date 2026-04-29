@@ -13,7 +13,8 @@ mod input;
 mod render;
 
 use crate::app::{
-    App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, PluginModalState, SessionPickerState,
+    App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, Modal, PluginModalState,
+    SessionPickerState, SetupWizardState,
 };
 use crate::config::load_or_create_config;
 use crate::connection::{
@@ -98,6 +99,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     // Load (or create) the client config before opening the gRPC session.
     let cfg = load_or_create_config()?;
+    let first_run = config::is_first_run(&cfg);
 
     // Derive a short model name for the status bar by stripping the vendor
     // prefix (e.g. "anthropic/claude-haiku-4.5" → "claude-haiku-4.5").
@@ -139,6 +141,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(model_display, cwd_str, cwd_display, cfg.clone());
+
+    if first_run {
+        app.messages.push(DisplayMessage::SetupPrompt);
+        app.modal = Some(Modal::SetupWizard(SetupWizardState::new()));
+    }
+
     let mut term_events = EventStream::new();
     // Ticker drives the thinking spinner; only app.tick is incremented when
     // the agent is busy, so the timer is cheap when idle.
@@ -149,10 +157,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
         tokio::select! {
             _ = ticker.tick() => {
-                let plugin_busy = app
-                    .pending_plugin_modal
+                let plugin_busy = app.modal
                     .as_ref()
-                    .is_some_and(|m| m.loading || m.installing);
+                    .is_some_and(|m| {
+                        match m {
+                            Modal::PluginManager(m) => {
+                                m.loading || m.installing
+                            },
+                            _ => false
+                        }
+                    });
+
                 if app.agent_busy
                     || matches!(app.connection_status, ConnectionStatus::Connecting)
                     || plugin_busy
@@ -201,11 +216,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             // path. A bridge task receives the final config from the modal
                             // and updates the cache before signalling the connection manager.
                             let (tx, rx) = tokio::sync::oneshot::channel::<SessionConfig>();
-                            app.pending_cwd_prompt = Some(CwdState {
-                                cwd,
-                                base_config: base,
-                                session_tx: tx,
-                            });
+                            app.modal = Some(Modal::CwdPrompt(
+                                CwdState {
+                                    cwd,
+                                    base_config: base,
+                                    session_tx: tx,
+                                }
+                            ));
                             let cache = session_config_cache.clone();
                             let notify = reconnect_notify.clone();
                             tokio::spawn(async move {
@@ -243,13 +260,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                         });
                     }
                     KeyAction::OpenPluginModal => {
-                        app.pending_plugin_modal = Some(PluginModalState {
+                        app.modal = Some(Modal::PluginManager(PluginModalState {
                             sources: vec![],
                             selected: 0,
                             installing: false,
                             loading: true,
                             status_message: None,
-                        });
+
+                        }));
                         let addr = args.server_addr.clone();
                         let tx = event_tx.clone();
                         tokio::spawn(async move {
@@ -280,6 +298,49 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                                 }
                             }
                         });
+                    }
+                    KeyAction::OpenSetupWizard => {
+                        app.modal = Some(Modal::SetupWizard(SetupWizardState::new()));
+                    }
+                    KeyAction::SetupComplete => {
+                        app.prompt_tx = None;
+                        app.connection_status = ConnectionStatus::Connecting;
+                        app.session_id = None;
+                        app.agent_busy = false;
+                        app.connection_error = None;
+                        // Remove the "No provider configured" banner now that setup is done.
+                        app.messages
+                            .retain(|m| !matches!(m, DisplayMessage::SetupPrompt));
+                        // Reload the freshly-saved config, then ask about CWD access the
+                        // same way the /new command and session picker do.
+                        if let Ok(new_cfg) = load_or_create_config() {
+                            app.current_cfg = new_cfg.clone();
+                            app.model_display = model_display_from_config(&new_cfg);
+                            let base = to_proto_session_config(&new_cfg, String::new());
+                            if let Some(cwd) = app.cwd.clone() {
+                                let (tx, rx) =
+                                    tokio::sync::oneshot::channel::<SessionConfig>();
+                                app.modal = Some(Modal::CwdPrompt(CwdState {
+                                    cwd,
+                                    base_config: base,
+                                    session_tx: tx,
+                                }));
+                                let cache = session_config_cache.clone();
+                                let notify = reconnect_notify.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(cfg) = rx.await {
+                                        *cache.lock().await = Some(cfg);
+                                        notify.notify_one();
+                                    }
+                                });
+                            } else {
+                                *session_config_cache.lock().await = Some(base);
+                                reconnect_notify.notify_one();
+                            }
+                        } else {
+                            *session_config_cache.lock().await = None;
+                            reconnect_notify.notify_one();
+                        }
                     }
                     KeyAction::Continue => {}
                 }
@@ -320,35 +381,37 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                         }
                     }
                     AppEvent::SessionsLoaded(sessions, session_tx) => {
-                        app.pending_session_picker = Some(SessionPickerState {
-                            sessions,
-                            selected: 0,
-                            session_tx,
-                        });
+                        if app.modal.is_none() {
+                            app.modal = Some(Modal::SessionPicker(SessionPickerState {
+                                sessions,
+                                selected: 0,
+                                session_tx,
+                            }));
+                        }
                     }
                     AppEvent::SessionDeleted(id) => {
-                        if let Some(picker) = &mut app.pending_session_picker {
-                            picker.sessions.retain(|s| s.id != id);
+                        if let Some(Modal::SessionPicker(picker_state)) = &mut app.modal {
+                            picker_state.sessions.retain(|s| s.id != id);
                             // Clamp selection: index 0 is always "New Session".
-                            let max_idx = picker.sessions.len();
-                            if picker.selected > max_idx {
-                                picker.selected = max_idx;
+                            let max_idx = picker_state.sessions.len();
+                            if picker_state.selected > max_idx {
+                                picker_state.selected = max_idx;
                             }
                         }
                     }
                     AppEvent::PluginStatusLoaded(sources) => {
-                        if let Some(modal) = &mut app.pending_plugin_modal {
-                            modal.sources = sources;
-                            modal.loading = false;
+                        if let Some(Modal::PluginManager(modal_state)) = &mut app.modal {
+                            modal_state.sources = sources;
+                            modal_state.loading = false;
                         }
                     }
                     AppEvent::PluginInstallResult { success, message } => {
-                        if let Some(modal) = &mut app.pending_plugin_modal {
-                            modal.installing = false;
-                            modal.status_message = Some(message);
+                        if let Some(Modal::PluginManager(modal_state)) = &mut app.modal {
+                            modal_state.installing = false;
+                            modal_state.status_message = Some(message);
                             // Optimistically mark the source as installed on success.
                             if success {
-                                for source in &mut modal.sources {
+                                for source in &mut modal_state.sources {
                                     source.installed = true;
                                 }
                             }

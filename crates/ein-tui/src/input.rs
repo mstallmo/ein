@@ -5,7 +5,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ein_proto::ein::{UserInput, agent_event::Event as ServerEvent, user_input};
 use tracing::{debug, info, warn};
 
-use crate::app::{App, CwdState, DisplayMessage, SessionPickerState};
+use crate::app::{
+    App, CwdState, DisplayMessage, Modal, SessionPickerState, SetupWizardState, WizardStep,
+};
 use crate::connection::to_proto_session_config;
 
 // ---------------------------------------------------------------------------
@@ -50,6 +52,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/plugins",
         description: "Manage installed plugins",
     },
+    CommandDef {
+        name: "/setup",
+        description: "Run the first-time setup wizard",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -92,6 +98,10 @@ pub(crate) enum KeyAction {
     OpenPluginModal,
     /// User selected a plugin source to install/update; `source_id` identifies it.
     InstallPlugin { source_id: String },
+    /// Open (or reopen) the first-time setup wizard.
+    OpenSetupWizard,
+    /// Setup wizard saved config; trigger an immediate reconnect.
+    SetupComplete,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,65 +119,54 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyAction 
         return KeyAction::Quit;
     }
 
-    // While the plugin modal is visible, route all key events to it.
-    if app.pending_plugin_modal.is_some() {
-        return handle_plugin_modal_key(app, key);
+    match &app.modal {
+        Some(Modal::SetupWizard(_)) => handle_setup_wizard_key(app, key),
+        Some(Modal::PluginManager(_)) => handle_plugin_modal_key(app, key),
+        Some(Modal::SessionPicker(_)) => handle_session_picker_key(app, key).await,
+        Some(Modal::CwdPrompt(_)) => handle_cwd_modal_key(app, key),
+        None => handle_normal_key(app, key).await,
     }
-
-    // While the session picker is visible, route all key events to it.
-    if app.pending_session_picker.is_some() {
-        return handle_session_picker_key(app, key).await;
-    }
-
-    // While the CWD modal is visible (only for new sessions), intercept Y/N.
-    if app.pending_cwd_prompt.is_some() {
-        return handle_cwd_modal_key(app, key);
-    }
-
-    handle_normal_key(app, key).await
 }
 
 fn handle_plugin_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
-    // While an async operation is in flight, only Esc is allowed.
-    let busy = app
-        .pending_plugin_modal
-        .as_ref()
-        .is_some_and(|m| m.loading || m.installing);
+    let busy = matches!(&app.modal, Some(Modal::PluginManager(m)) if m.loading || m.installing);
     if busy {
         if key.code == KeyCode::Esc {
-            app.pending_plugin_modal = None;
+            app.modal = None;
         }
         return KeyAction::Continue;
     }
 
     match key.code {
         KeyCode::Esc => {
-            app.pending_plugin_modal = None;
+            app.modal = None;
         }
         KeyCode::Up => {
-            if let Some(modal) = app.pending_plugin_modal.as_mut() {
-                if modal.selected > 0 {
-                    modal.selected -= 1;
+            if let Some(Modal::PluginManager(m)) = &mut app.modal {
+                if m.selected > 0 {
+                    m.selected -= 1;
                 }
             }
         }
         KeyCode::Down => {
-            if let Some(modal) = app.pending_plugin_modal.as_mut() {
-                if modal.selected + 1 < modal.sources.len() {
-                    modal.selected += 1;
+            if let Some(Modal::PluginManager(m)) = &mut app.modal {
+                if m.selected + 1 < m.sources.len() {
+                    m.selected += 1;
                 }
             }
         }
         KeyCode::Enter => {
-            let source_id = app
-                .pending_plugin_modal
-                .as_ref()
-                .and_then(|m| m.sources.get(m.selected))
-                .map(|s| s.id.clone())
-                .unwrap_or_else(|| "default".to_string());
-            if let Some(modal) = app.pending_plugin_modal.as_mut() {
-                modal.installing = true;
-                modal.status_message = None;
+            let source_id = match &app.modal {
+                Some(Modal::PluginManager(m)) => m
+                    .sources
+                    .get(m.selected)
+                    .map(|s| s.id.clone())
+                    .unwrap_or_else(|| "default".to_string()),
+                _ => return KeyAction::Continue,
+            };
+            if let Some(Modal::PluginManager(m)) = &mut app.modal {
+                m.installing = true;
+                m.status_message = None;
             }
             return KeyAction::InstallPlugin { source_id };
         }
@@ -177,43 +176,54 @@ fn handle_plugin_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
 }
 
 async fn handle_session_picker_key(app: &mut App, key: KeyEvent) -> KeyAction {
-    let picker = app.pending_session_picker.as_mut().unwrap();
     match key.code {
         KeyCode::Up => {
-            if picker.selected > 0 {
-                picker.selected -= 1;
+            if let Some(Modal::SessionPicker(p)) = &mut app.modal {
+                if p.selected > 0 {
+                    p.selected -= 1;
+                }
             }
         }
         KeyCode::Down => {
-            if picker.selected < picker.sessions.len() {
-                picker.selected += 1;
+            if let Some(Modal::SessionPicker(p)) = &mut app.modal {
+                if p.selected < p.sessions.len() {
+                    p.selected += 1;
+                }
             }
         }
         // Shift+D: delete the highlighted existing session (not "New Session").
         KeyCode::Char('D') => {
-            let picker = app.pending_session_picker.as_ref().unwrap();
-            if picker.selected > 0 {
-                let session_id = picker.sessions[picker.selected - 1].id.clone();
-                return KeyAction::DeleteSession(session_id);
+            if let Some(Modal::SessionPicker(p)) = &app.modal {
+                if p.selected > 0 {
+                    let session_id = p.sessions[p.selected - 1].id.clone();
+                    return KeyAction::DeleteSession(session_id);
+                }
             }
         }
+        // S: open the setup wizard to configure a provider.
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            return KeyAction::OpenSetupWizard;
+        }
         KeyCode::Enter => {
-            let state = app.pending_session_picker.take().unwrap();
+            let state = match app.modal.take() {
+                Some(Modal::SessionPicker(s)) => s,
+                other => {
+                    app.modal = other;
+                    return KeyAction::Continue;
+                }
+            };
             if state.selected == 0 {
-                // "New Session" — build config from current settings.
                 let base = to_proto_session_config(&app.current_cfg, String::new());
                 if let Some(cwd) = app.cwd.clone() {
-                    // Show the CWD modal before sending the config.
-                    app.pending_cwd_prompt = Some(CwdState {
+                    app.modal = Some(Modal::CwdPrompt(CwdState {
                         cwd,
                         base_config: base,
                         session_tx: state.session_tx,
-                    });
+                    }));
                 } else {
                     let _ = state.session_tx.send(base);
                 }
             } else {
-                // Resume existing session using its stored config.
                 resolve_session_resume(state).await;
             }
         }
@@ -251,17 +261,153 @@ async fn resolve_session_resume(state: SessionPickerState) {
     let _ = state.session_tx.send(resume_cfg);
 }
 
+fn handle_setup_wizard_key(app: &mut App, key: KeyEvent) -> KeyAction {
+    // Clone the current step so we release the borrow before mutating app.modal.
+    let step = match &app.modal {
+        Some(Modal::SetupWizard(w)) => w.step.clone(),
+        _ => return KeyAction::Continue,
+    };
+
+    match step {
+        WizardStep::ChooseProvider => match key.code {
+            KeyCode::Esc => {
+                app.modal = None;
+            }
+            KeyCode::Up => {
+                if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                    if w.provider_idx > 0 {
+                        w.provider_idx -= 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                    if w.provider_idx + 1 < crate::app::PROVIDERS.len() {
+                        w.provider_idx += 1;
+                    }
+                }
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                    w.advance_step();
+                }
+            }
+            _ => {}
+        },
+
+        WizardStep::EnterApiKey => {
+            if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                handle_wizard_text_input(key, w, |w| (&mut w.api_key, &mut w.api_key_cursor));
+            }
+        }
+        WizardStep::EnterBaseUrl => {
+            if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                handle_wizard_text_input(key, w, |w| (&mut w.base_url, &mut w.base_url_cursor));
+            }
+        }
+        WizardStep::EnterModel => {
+            if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                handle_wizard_text_input(key, w, |w| (&mut w.model, &mut w.model_cursor));
+            }
+        }
+
+        WizardStep::Confirm => match key.code {
+            KeyCode::Esc => {
+                if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                    w.error = None;
+                    w.retreat_step();
+                }
+            }
+            KeyCode::Enter => {
+                let (provider_key, api_key, base_url, model) = match &app.modal {
+                    Some(Modal::SetupWizard(w)) => (
+                        w.provider_key(),
+                        w.api_key.clone(),
+                        w.base_url.clone(),
+                        w.model.clone(),
+                    ),
+                    _ => return KeyAction::Continue,
+                };
+                let cfg = crate::config::build_config_for_provider(
+                    provider_key,
+                    &api_key,
+                    &base_url,
+                    &model,
+                );
+                match crate::config::save_config(&cfg) {
+                    Ok(()) => {
+                        app.modal = None;
+                        return KeyAction::SetupComplete;
+                    }
+                    Err(e) => {
+                        if let Some(Modal::SetupWizard(w)) = &mut app.modal {
+                            w.error = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+    }
+
+    KeyAction::Continue
+}
+
+/// Handles a key press for a wizard text-input step.
+///
+/// `field_fn` extracts mutable references to the buffer and cursor for the active field.
+fn handle_wizard_text_input<F>(key: KeyEvent, wizard: &mut SetupWizardState, field_fn: F)
+where
+    F: Fn(&mut SetupWizardState) -> (&mut String, &mut usize),
+{
+    match key.code {
+        KeyCode::Esc => wizard.retreat_step(),
+        KeyCode::Enter | KeyCode::Tab => wizard.advance_step(),
+        KeyCode::Char(c) => {
+            let (buf, cursor) = field_fn(wizard);
+            let byte_idx = char_to_byte_idx(buf, *cursor);
+            buf.insert(byte_idx, c);
+            *cursor += 1;
+        }
+        KeyCode::Backspace => {
+            let (buf, cursor) = field_fn(wizard);
+            if *cursor > 0 {
+                let byte_end = char_to_byte_idx(buf, *cursor);
+                let byte_start = char_to_byte_idx(buf, *cursor - 1);
+                buf.drain(byte_start..byte_end);
+                *cursor -= 1;
+            }
+        }
+        KeyCode::Left => {
+            let (_, cursor) = field_fn(wizard);
+            if *cursor > 0 {
+                *cursor -= 1;
+            }
+        }
+        KeyCode::Right => {
+            let (buf, cursor) = field_fn(wizard);
+            let len = buf.chars().count();
+            if *cursor < len {
+                *cursor += 1;
+            }
+        }
+        _ => {}
+    }
+}
+
 fn handle_cwd_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let state = app.pending_cwd_prompt.take().unwrap();
-            let mut config = state.base_config;
-            config.allowed_paths.push(state.cwd);
-            let _ = state.session_tx.send(config);
+            if let Some(Modal::CwdPrompt(state)) = app.modal.take() {
+                let mut config = state.base_config;
+                config.allowed_paths.push(state.cwd);
+                let _ = state.session_tx.send(config);
+            }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
-            let state = app.pending_cwd_prompt.take().unwrap();
-            let _ = state.session_tx.send(state.base_config);
+            if let Some(Modal::CwdPrompt(state)) = app.modal.take() {
+                let _ = state.session_tx.send(state.base_config);
+            }
         }
         _ => {}
     }
@@ -334,6 +480,7 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
                 "/new" => return KeyAction::NewSession,
                 "/plugins" => return KeyAction::OpenPluginModal,
                 "/sessions" => return KeyAction::OpenSessionPicker,
+                "/setup" => return KeyAction::OpenSetupWizard,
                 _ => {
                     // Reject unrecognized slash commands — display a local error, do not send to server.
                     if text.starts_with('/') {
