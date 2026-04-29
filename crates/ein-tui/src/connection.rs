@@ -152,13 +152,16 @@ async fn try_connect(
                     return Ok(false); // TUI exited while we were fetching
                 }
 
-                // Block until the user makes a selection (or the TUI exits).
+                // Block until the user makes a selection (or the picker is dismissed).
                 match rx.await {
                     Ok(cfg) => {
                         *session_config_cache.lock().await = Some(cfg.clone());
                         cfg
                     }
-                    Err(_) => return Ok(false), // oneshot dropped — TUI exited
+                    // Oneshot dropped without a value — the session picker was dismissed
+                    // (e.g. user opened the setup wizard). Treat as a transient failure so
+                    // the connection manager retries once the cache is populated.
+                    Err(_) => return Err(anyhow::anyhow!("session selection cancelled")),
                 }
             }
         }

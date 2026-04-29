@@ -459,13 +459,11 @@ impl AgentService for AgentServer {
                             Err(err) => {
                                 eprintln!("[session] agent error: {err}");
                                 channel_sender
-                                    .send_error(Status::internal(err.to_string()))
+                                    .send_event(Event::AgentError(AgentError {
+                                        message: err.to_string(),
+                                    }))
                                     .await;
-                                // Deliberate: we do not call save_messages here because this hard-error
-                                // path is only reached by catastrophic transport failures. Soft errors
-                                // (API errors, HTTP failures) are returned as Ok(()) by run_agent and
-                                // reach the save_messages call below.
-                                break;
+                                continue;
                             }
                         };
 

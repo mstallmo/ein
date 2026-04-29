@@ -17,7 +17,10 @@ use syntect::{
 };
 use tracing::debug;
 
-use crate::app::{App, ConnectionStatus, DisplayMessage, PluginModalState, SessionPickerState};
+use crate::app::{
+    App, ConnectionStatus, DisplayMessage, Modal, PROVIDERS, PluginModalState, SessionPickerState,
+    SetupWizardState, WizardStep,
+};
 use crate::input::COMMANDS;
 
 // ---------------------------------------------------------------------------
@@ -304,18 +307,22 @@ pub(crate) fn render(app: &App, frame: &mut Frame) {
     }
 
     // --- Plugin modal ---
-    if let Some(modal) = &app.pending_plugin_modal {
-        render_plugin_modal(modal, app.tick, frame);
-    }
 
-    // --- Session picker (overlays everything, shown before CWD modal) ---
-    if let Some(picker) = &app.pending_session_picker {
-        render_session_picker(picker, frame);
-    }
-
-    // --- CWD access modal (overlays everything when present, after session picker) ---
-    if let Some(cwd_state) = &app.pending_cwd_prompt {
-        render_cwd_modal(&cwd_state.cwd, frame);
+    if let Some(modal) = &app.modal {
+        match modal {
+            Modal::SetupWizard(setup_wizard_state) => {
+                render_setup_wizard(setup_wizard_state, frame);
+            }
+            Modal::PluginManager(plugin_manager_state) => {
+                render_plugin_modal(plugin_manager_state, app.tick, frame);
+            }
+            Modal::SessionPicker(session_picker_state) => {
+                render_session_picker(session_picker_state, frame);
+            }
+            Modal::CwdPrompt(cwd_state) => {
+                render_cwd_modal(&cwd_state.cwd, frame);
+            }
+        }
     }
 
     // --- Status bar ---
@@ -404,6 +411,19 @@ pub(crate) fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                     lines.push(Line::from(spans));
                 }
 
+                lines.push(Line::raw(""));
+            }
+            DisplayMessage::SetupPrompt => {
+                lines.push(Line::from(Span::styled(
+                    " No provider configured.",
+                    Style::default()
+                        .fg(DISCONNECTED_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    " Run /setup to get started, or /config to edit ~/.ein/config.json directly.",
+                    Style::default().fg(MUTED_COLOR),
+                )));
                 lines.push(Line::raw(""));
             }
             DisplayMessage::User(text) => {
@@ -815,10 +835,229 @@ fn render_session_picker(picker: &SessionPickerState, frame: &mut Frame) {
                 .fg(AUTOCOMPLETE_TOP_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" Delete", Style::default().fg(MUTED_COLOR)),
+        Span::styled(" Delete  ", Style::default().fg(MUTED_COLOR)),
+        Span::styled(
+            "[S]",
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Setup", Style::default().fg(MUTED_COLOR)),
     ]));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Renders an input field with a cursor indicator within a wizard page.
+///
+/// `masked` replaces visible characters with `*` (used for API key fields).
+fn render_wizard_field(label: &str, buf: &str, cursor: usize, masked: bool) -> Line<'static> {
+    let displayed: String = if masked {
+        "*".repeat(buf.chars().count())
+    } else {
+        buf.to_string()
+    };
+
+    let before: String = displayed.chars().take(cursor).collect();
+    let at: String = displayed
+        .chars()
+        .nth(cursor)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    let after: String = displayed.chars().skip(cursor + 1).collect();
+
+    Line::from(vec![
+        Span::styled(format!("  {label}: "), Style::default().fg(MUTED_COLOR)),
+        Span::raw(before),
+        Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
+        Span::raw(after),
+    ])
+}
+
+/// Key hint line shown at the bottom of each wizard page.
+fn wizard_hint(
+    primary: &str,
+    primary_label: &str,
+    secondary: &str,
+    secondary_label: &str,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  [{primary}]"),
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {primary_label}  "),
+            Style::default().fg(MUTED_COLOR),
+        ),
+        Span::styled(
+            format!("[{secondary}]"),
+            Style::default()
+                .fg(AUTOCOMPLETE_TOP_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" {secondary_label}"),
+            Style::default().fg(MUTED_COLOR),
+        ),
+    ])
+}
+
+/// Renders the first-time setup wizard modal over the entire terminal.
+fn render_setup_wizard(wizard: &SetupWizardState, frame: &mut Frame) {
+    let modal_width = (frame.area().width * 7 / 10)
+        .max(60)
+        .min(frame.area().width);
+
+    // Build the page content first so we know the height.
+    let mut content: Vec<Line> = vec![Line::raw("")];
+
+    let title = match wizard.step {
+        WizardStep::ChooseProvider => {
+            for (i, (_, display_name)) in PROVIDERS.iter().enumerate() {
+                let is_sel = wizard.provider_idx == i;
+                let cursor = if is_sel { "> " } else { "  " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(AUTOCOMPLETE_TOP_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(MUTED_COLOR)
+                };
+                content.push(Line::from(Span::styled(
+                    format!("{cursor}{display_name}"),
+                    style,
+                )));
+            }
+            content.push(Line::raw(""));
+            content.push(wizard_hint("↑↓", "Navigate", "Enter", "Select"));
+            " Setup: Choose Provider "
+        }
+        WizardStep::EnterApiKey => {
+            content.push(render_wizard_field(
+                "API Key",
+                &wizard.api_key,
+                wizard.api_key_cursor,
+                true,
+            ));
+            content.push(Line::raw(""));
+            content.push(wizard_hint("Enter", "Next", "Esc", "Back"));
+            " Setup: API Key "
+        }
+        WizardStep::EnterBaseUrl => {
+            let default_hint = match wizard.provider_key() {
+                "ein_openrouter" => "  (default: https://openrouter.ai/api/v1)",
+                "ein_ollama" => "  (default: http://localhost:11434)",
+                _ => "  (leave blank for api.openai.com)",
+            };
+            content.push(render_wizard_field(
+                "Base URL",
+                &wizard.base_url,
+                wizard.base_url_cursor,
+                false,
+            ));
+            content.push(Line::from(Span::styled(
+                default_hint.to_string(),
+                Style::default().fg(MUTED_COLOR),
+            )));
+            content.push(Line::raw(""));
+            content.push(wizard_hint("Enter", "Next", "Esc", "Back"));
+            " Setup: Base URL "
+        }
+        WizardStep::EnterModel => {
+            content.push(render_wizard_field(
+                "Model",
+                &wizard.model,
+                wizard.model_cursor,
+                false,
+            ));
+            content.push(Line::raw(""));
+            content.push(wizard_hint("Enter", "Next", "Esc", "Back"));
+            " Setup: Model "
+        }
+        WizardStep::Confirm => {
+            let provider_name = PROVIDERS[wizard.provider_idx].1;
+            let key_chars: Vec<char> = wizard.api_key.chars().collect();
+            let masked_key = if key_chars.len() > 4 {
+                format!(
+                    "*****{}",
+                    key_chars[key_chars.len() - 4..].iter().collect::<String>()
+                )
+            } else if key_chars.is_empty() {
+                "(none)".to_string()
+            } else {
+                "*****".to_string()
+            };
+
+            content.push(Line::from(vec![
+                Span::styled("  Provider : ", Style::default().fg(MUTED_COLOR)),
+                Span::styled(
+                    provider_name.to_string(),
+                    Style::default().fg(AUTOCOMPLETE_TOP_COLOR),
+                ),
+            ]));
+
+            if !wizard.api_key.is_empty() {
+                content.push(Line::from(vec![
+                    Span::styled("  API Key  : ", Style::default().fg(MUTED_COLOR)),
+                    Span::styled(masked_key, Style::default().fg(AUTOCOMPLETE_TOP_COLOR)),
+                ]));
+            }
+
+            let effective_url: &str = match wizard.provider_key() {
+                "ein_openrouter" if wizard.base_url.is_empty() => "https://openrouter.ai/api/v1",
+                "ein_ollama" if wizard.base_url.is_empty() => "http://localhost:11434",
+                _ => &wizard.base_url,
+            };
+            if !effective_url.is_empty() {
+                content.push(Line::from(vec![
+                    Span::styled("  Base URL : ", Style::default().fg(MUTED_COLOR)),
+                    Span::styled(
+                        effective_url.to_string(),
+                        Style::default().fg(AUTOCOMPLETE_TOP_COLOR),
+                    ),
+                ]));
+            }
+
+            if !wizard.model.is_empty() {
+                content.push(Line::from(vec![
+                    Span::styled("  Model    : ", Style::default().fg(MUTED_COLOR)),
+                    Span::styled(
+                        wizard.model.clone(),
+                        Style::default().fg(AUTOCOMPLETE_TOP_COLOR),
+                    ),
+                ]));
+            }
+
+            if let Some(err) = &wizard.error {
+                content.push(Line::raw(""));
+                content.push(Line::from(Span::styled(
+                    format!("  Error: {err}"),
+                    Style::default().fg(DISCONNECTED_COLOR),
+                )));
+            }
+
+            content.push(Line::raw(""));
+            content.push(wizard_hint("Enter", "Save", "Esc", "Back"));
+            " Setup: Confirm "
+        }
+    };
+
+    let modal_height = (content.len() as u16) + 2; // +2 for borders
+    let area = centered_rect(modal_width, modal_height, frame.area());
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(INPUT_BORDER_COLOR));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(Paragraph::new(content), inner);
 }
 
 fn format_session_date(unix_secs: i64) -> String {

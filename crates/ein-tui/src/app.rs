@@ -47,6 +47,8 @@ pub(crate) enum ConnectionStatus {
 pub(crate) enum DisplayMessage {
     /// Welcome banner shown once at the top of the conversation on startup.
     Header { cwd: String },
+    /// Shown on first run when no provider is configured.
+    SetupPrompt,
     /// Text sent by the local user.
     User(String),
     /// Streamed text from the agent (may be appended to incrementally).
@@ -69,6 +71,133 @@ pub(crate) enum DisplayMessage {
     },
     /// An error returned by either the agent or the server.
     Error(String),
+}
+
+// ---------------------------------------------------------------------------
+// Setup wizard state
+// ---------------------------------------------------------------------------
+
+/// Provider display names in the order they appear in the wizard.
+/// Index 0 is the default selection.
+pub(crate) const PROVIDERS: &[(&str, &str)] = &[
+    ("ein_openrouter", "OpenRouter"),
+    ("ein_anthropic", "Anthropic"),
+    ("ein_openai", "OpenAI"),
+    ("ein_ollama", "Ollama (local)"),
+];
+
+/// Which page of the setup wizard is active.
+#[derive(Clone)]
+pub(crate) enum WizardStep {
+    ChooseProvider,
+    EnterApiKey,
+    EnterBaseUrl,
+    EnterModel,
+    Confirm,
+}
+
+pub(crate) struct SetupWizardState {
+    pub(crate) step: WizardStep,
+    pub(crate) provider_idx: usize,
+    pub(crate) api_key: String,
+    pub(crate) api_key_cursor: usize,
+    pub(crate) base_url: String,
+    pub(crate) base_url_cursor: usize,
+    pub(crate) model: String,
+    pub(crate) model_cursor: usize,
+    /// Set when a save attempt fails; displayed in the Confirm page.
+    pub(crate) error: Option<String>,
+}
+
+impl SetupWizardState {
+    pub(crate) fn new() -> Self {
+        Self {
+            step: WizardStep::ChooseProvider,
+            provider_idx: 0,
+            api_key: String::new(),
+            api_key_cursor: 0,
+            base_url: String::new(),
+            base_url_cursor: 0,
+            model: String::new(),
+            model_cursor: 0,
+            error: None,
+        }
+    }
+
+    pub(crate) fn provider_key(&self) -> &'static str {
+        PROVIDERS[self.provider_idx].0
+    }
+
+    /// Advance to the next step, skipping steps that don't apply to the selected provider.
+    pub(crate) fn advance_step(&mut self) {
+        self.step = match self.step {
+            WizardStep::ChooseProvider => {
+                self.api_key.clear();
+                self.api_key_cursor = 0;
+                self.base_url.clear();
+                self.base_url_cursor = 0;
+                self.model.clear();
+                self.model_cursor = 0;
+                if self.provider_key() == "ein_ollama" {
+                    WizardStep::EnterBaseUrl
+                } else {
+                    WizardStep::EnterApiKey
+                }
+            }
+            WizardStep::EnterApiKey => {
+                if self.provider_key() == "ein_anthropic" {
+                    WizardStep::EnterModel
+                } else {
+                    WizardStep::EnterBaseUrl
+                }
+            }
+            WizardStep::EnterBaseUrl => WizardStep::EnterModel,
+            WizardStep::EnterModel => WizardStep::Confirm,
+            WizardStep::Confirm => WizardStep::Confirm,
+        };
+    }
+
+    /// Go back one step, skipping steps that don't apply to the selected provider.
+    pub(crate) fn retreat_step(&mut self) {
+        self.step = match self.step {
+            WizardStep::ChooseProvider => WizardStep::ChooseProvider,
+            WizardStep::EnterApiKey => WizardStep::ChooseProvider,
+            WizardStep::EnterBaseUrl => {
+                if self.provider_key() == "ein_ollama" {
+                    WizardStep::ChooseProvider
+                } else {
+                    WizardStep::EnterApiKey
+                }
+            }
+            WizardStep::EnterModel => {
+                if self.provider_key() == "ein_anthropic" {
+                    WizardStep::EnterApiKey
+                } else {
+                    WizardStep::EnterBaseUrl
+                }
+            }
+            WizardStep::Confirm => WizardStep::EnterModel,
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Modal overlay
+//
+// Exactly one modal can be active at a time. Using an enum enforces this
+// invariant at the type level and eliminates scattered Option fields.
+// ---------------------------------------------------------------------------
+
+/// The overlay currently covering the main UI. Only one is ever active.
+pub(crate) enum Modal {
+    /// First-time setup wizard (provider / API key entry).
+    SetupWizard(SetupWizardState),
+    /// Plugin manager, opened via `/plugins`.
+    PluginManager(PluginModalState),
+    /// Session picker shown on first connection when no cache exists.
+    SessionPicker(SessionPickerState),
+    /// CWD access prompt, shown after choosing "New Session".
+    CwdPrompt(CwdState),
 }
 
 // ---------------------------------------------------------------------------
@@ -169,18 +298,14 @@ pub(crate) struct App {
     /// Last connection error message, shown above the connecting spinner.
     /// Replaced in-place on each disconnect; cleared when connected.
     pub(crate) connection_error: Option<String>,
-    /// When `Some`, the session picker overlay is visible (shown first on startup).
-    pub(crate) pending_session_picker: Option<SessionPickerState>,
-    /// When `Some`, the CWD access modal is visible (only for new sessions).
-    pub(crate) pending_cwd_prompt: Option<CwdState>,
     /// Current working directory captured at startup; offered when creating new sessions.
     pub(crate) cwd: Option<String>,
     /// Current client config, kept in sync with `ConfigChanged` events.
     pub(crate) current_cfg: ClientConfig,
     /// Session UUID assigned by the server, shown in the status bar.
     pub(crate) session_id: Option<String>,
-    /// When `Some`, the plugin manager modal is visible.
-    pub(crate) pending_plugin_modal: Option<PluginModalState>,
+    /// The active modal overlay, if any. Only one modal is ever shown at a time.
+    pub(crate) modal: Option<Modal>,
 }
 
 impl App {
@@ -205,12 +330,10 @@ impl App {
             connection_status: ConnectionStatus::Connecting,
             prompt_tx: None,
             connection_error: None,
-            pending_session_picker: None,
-            pending_cwd_prompt: None,
             cwd,
             current_cfg,
             session_id: None,
-            pending_plugin_modal: None,
+            modal: None,
         }
     }
 }
@@ -218,6 +341,87 @@ impl App {
 // ---------------------------------------------------------------------------
 // Test helpers (shared across all test modules in this crate)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod wizard_tests {
+    use super::*;
+
+    fn wizard_at_provider(provider_idx: usize) -> SetupWizardState {
+        let mut w = SetupWizardState::new();
+        w.provider_idx = provider_idx;
+        w
+    }
+
+    fn provider_idx(name: &str) -> usize {
+        PROVIDERS.iter().position(|(k, _)| *k == name).unwrap()
+    }
+
+    #[test]
+    fn openrouter_step_sequence() {
+        let mut w = wizard_at_provider(provider_idx("ein_openrouter"));
+        assert!(matches!(w.step, WizardStep::ChooseProvider));
+        w.advance_step();
+        assert!(matches!(w.step, WizardStep::EnterApiKey));
+        w.advance_step();
+        assert!(matches!(w.step, WizardStep::EnterBaseUrl));
+        w.advance_step();
+        assert!(matches!(w.step, WizardStep::EnterModel));
+        w.advance_step();
+        assert!(matches!(w.step, WizardStep::Confirm));
+    }
+
+    #[test]
+    fn anthropic_skips_base_url() {
+        let mut w = wizard_at_provider(provider_idx("ein_anthropic"));
+        w.advance_step(); // ChooseProvider -> EnterApiKey
+        assert!(matches!(w.step, WizardStep::EnterApiKey));
+        w.advance_step(); // EnterApiKey -> EnterModel (skips EnterBaseUrl)
+        assert!(matches!(w.step, WizardStep::EnterModel));
+    }
+
+    #[test]
+    fn ollama_skips_api_key() {
+        let mut w = wizard_at_provider(provider_idx("ein_ollama"));
+        w.advance_step(); // ChooseProvider -> EnterBaseUrl (skips EnterApiKey)
+        assert!(matches!(w.step, WizardStep::EnterBaseUrl));
+        w.advance_step();
+        assert!(matches!(w.step, WizardStep::EnterModel));
+    }
+
+    #[test]
+    fn retreat_openrouter_from_confirm() {
+        let mut w = wizard_at_provider(provider_idx("ein_openrouter"));
+        w.step = WizardStep::Confirm;
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::EnterModel));
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::EnterBaseUrl));
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::EnterApiKey));
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::ChooseProvider));
+    }
+
+    #[test]
+    fn retreat_ollama_from_base_url_goes_to_choose_provider() {
+        let mut w = wizard_at_provider(provider_idx("ein_ollama"));
+        w.step = WizardStep::EnterBaseUrl;
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::ChooseProvider));
+    }
+
+    #[test]
+    fn retreat_anthropic_from_model_goes_to_api_key() {
+        let mut w = wizard_at_provider(provider_idx("ein_anthropic"));
+        w.step = WizardStep::EnterModel;
+        w.retreat_step();
+        assert!(matches!(w.step, WizardStep::EnterApiKey));
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod test_helpers {
