@@ -2,7 +2,7 @@
 // Copyright 2026 Mason Stallmo
 
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
+use xz2::read::XzDecoder;
 use std::{io, path::Path};
 use tar::Archive;
 use tokio::{fs, task};
@@ -20,7 +20,7 @@ pub async fn install_plugins(version: Option<String>) -> Result<()> {
     let ver = ver.trim_start_matches('v');
     let tag = format!("v{ver}");
     let url =
-        format!("https://github.com/mstallmo/ein/releases/download/{tag}/ein-plugins-{tag}.tar.gz");
+        format!("https://github.com/mstallmo/ein/releases/download/{tag}/ein-plugins-{tag}.tar.xz");
 
     let plugins_dir = dirs::home_dir()
         .context("Failed to find home directory")?
@@ -46,8 +46,8 @@ pub async fn install_plugins(version: Option<String>) -> Result<()> {
         .context("Failed to read response body")?;
 
     task::spawn_blocking(move || {
-        let gz = GzDecoder::new(io::Cursor::new(bytes));
-        Archive::new(gz)
+        let xz = XzDecoder::new(io::Cursor::new(bytes));
+        Archive::new(xz)
             .unpack(&plugins_dir)
             .context("Failed to extract plugin archive")
     })

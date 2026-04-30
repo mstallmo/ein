@@ -197,7 +197,7 @@ jobs:
       - name: Package plugins
         run: |
           VERSION="${{ needs.plan.outputs.tag }}"
-          ARCHIVE="ein-plugins-${VERSION}.tar.gz"
+          ARCHIVE="ein-plugins-${VERSION}.tar.xz"
           mkdir -p dist-plugins/tools dist-plugins/model_clients
 
           cargo metadata --no-deps --format-version 1 | \
@@ -210,7 +210,7 @@ jobs:
               cp "target/wasm32-wasip2/release/${name}.wasm" "dist-plugins/${plugin_type}s/"
             done
 
-          tar -czf "$ARCHIVE" -C dist-plugins .
+          tar -cJf "$ARCHIVE" -C dist-plugins .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
       - name: Upload plugin archive artifact
         uses: actions/upload-artifact@v6

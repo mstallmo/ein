@@ -1013,7 +1013,6 @@ dependencies = [
  "ein-agent",
  "ein-proto",
  "ein_plugin",
- "flate2",
  "futures",
  "hyper",
  "reqwest",
@@ -1028,6 +1027,7 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
+ "xz2",
 ]
 
 [[package]]

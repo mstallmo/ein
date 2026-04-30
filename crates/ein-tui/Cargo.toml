@@ -35,5 +35,5 @@ tracing            = { workspace = true }
 tracing-appender   = "0.2"
 tracing-subscriber = { workspace = true }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls"] }
-xz2 = "0.1"
+xz2 = { workspace = true }
 tar = "0.4.45"
