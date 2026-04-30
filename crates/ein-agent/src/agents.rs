@@ -768,11 +768,19 @@ mod tests {
 
         let msgs = agent.messages();
         assert!(
-            msgs[0].content.as_deref().unwrap_or("").starts_with("[Tool result truncated:"),
+            msgs[0]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("[Tool result truncated:"),
             "old large tool result must be truncated"
         );
         assert!(
-            msgs[1].content.as_deref().unwrap_or("").starts_with("[Tool result truncated:"),
+            msgs[1]
+                .content
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("[Tool result truncated:"),
             "old large tool result must be truncated"
         );
         assert_eq!(msgs[2].content.as_deref(), Some("recent 1"));
@@ -799,7 +807,10 @@ mod tests {
 
         for msg in agent.messages() {
             assert!(
-                !msg.content.as_deref().unwrap_or("").starts_with("[Tool result truncated:"),
+                !msg.content
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("[Tool result truncated:"),
                 "recent messages must not be truncated"
             );
         }
@@ -823,8 +834,16 @@ mod tests {
         agent.truncate_old_tool_results();
 
         let msgs = agent.messages();
-        assert_eq!(msgs[0].content.as_deref(), Some(large.as_str()), "User must not be truncated");
-        assert_eq!(msgs[1].content.as_deref(), Some(large.as_str()), "System must not be truncated");
+        assert_eq!(
+            msgs[0].content.as_deref(),
+            Some(large.as_str()),
+            "User must not be truncated"
+        );
+        assert_eq!(
+            msgs[1].content.as_deref(),
+            Some(large.as_str()),
+            "System must not be truncated"
+        );
     }
 
     #[test]
@@ -899,7 +918,9 @@ mod tests {
         })
         .with_event_handler(move |event| {
             let cap = cap.clone();
-            async move { cap.lock().unwrap().push(event); }
+            async move {
+                cap.lock().unwrap().push(event);
+            }
         })
         .with_message_history(vec![user_msg("do stuff")])
         .build();
@@ -910,7 +931,11 @@ mod tests {
         let deltas: Vec<&str> = events
             .iter()
             .filter_map(|e| {
-                if let AgentEvent::ContentDelta(t) = e { Some(t.as_str()) } else { None }
+                if let AgentEvent::ContentDelta(t) = e {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
             })
             .collect();
         assert_eq!(deltas, vec![summary]);
@@ -993,7 +1018,9 @@ mod tests {
         })
         .with_event_handler(move |event| {
             let cap = cap.clone();
-            async move { cap.lock().unwrap().push(event); }
+            async move {
+                cap.lock().unwrap().push(event);
+            }
         })
         .build();
 
@@ -1001,13 +1028,22 @@ mod tests {
 
         let events = captured.lock().unwrap();
         let usage = events.iter().find_map(|e| {
-            if let AgentEvent::TokenUsage { prompt_tokens, completion_tokens, total_tokens } = e {
+            if let AgentEvent::TokenUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } = e
+            {
                 Some((*prompt_tokens, *completion_tokens, *total_tokens))
             } else {
                 None
             }
         });
-        assert_eq!(usage, Some((10, 5, 15)), "TokenUsage event must carry correct totals");
+        assert_eq!(
+            usage,
+            Some((10, 5, 15)),
+            "TokenUsage event must carry correct totals"
+        );
     }
 
     #[tokio::test]

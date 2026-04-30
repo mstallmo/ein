@@ -19,7 +19,7 @@ use tracing::debug;
 
 use crate::app::{
     App, ConnectionStatus, DisplayMessage, Modal, PROVIDERS, PluginModalState, SessionPickerState,
-    SetupWizardState, WizardStep,
+    SetupWizardState, UninstallModalState, UninstallPhase, WizardStep,
 };
 use crate::input::COMMANDS;
 
@@ -321,6 +321,9 @@ pub(crate) fn render(app: &App, frame: &mut Frame) {
             }
             Modal::CwdPrompt(cwd_state) => {
                 render_cwd_modal(&cwd_state.cwd, frame);
+            }
+            Modal::UninstallConfirm(state) => {
+                render_uninstall_modal(state, app.tick, frame);
             }
         }
     }
@@ -751,6 +754,104 @@ fn render_cwd_modal(cwd: &str, frame: &mut Frame) {
             Span::styled(" Deny", Style::default().fg(MUTED_COLOR)),
         ]),
     ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_uninstall_modal(state: &UninstallModalState, tick: u64, frame: &mut Frame) {
+    // Height: 2 borders + blank line + content lines + blank + hint
+    let content_lines = match &state.phase {
+        UninstallPhase::Confirm => 4u16,
+        UninstallPhase::Running => 1u16,
+        UninstallPhase::Done { .. } => state.log.len().max(1) as u16 + 2,
+    };
+    let modal_height = 2 + 1 + content_lines;
+    let modal_width = (frame.area().width * 7 / 10).max(60).min(frame.area().width);
+    let area = centered_rect(modal_width, modal_height, frame.area());
+
+    frame.render_widget(Clear, area);
+
+    let (title, border_color) = match &state.phase {
+        UninstallPhase::Confirm => (" Uninstall ein-server? ", DISCONNECTED_COLOR),
+        UninstallPhase::Running => (" Uninstalling… ", MUTED_COLOR),
+        UninstallPhase::Done { success: true } => (" Uninstalled ", Color::Green),
+        UninstallPhase::Done { success: false } => (" Uninstall failed ", DISCONNECTED_COLOR),
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    let mut lines = vec![Line::raw("")];
+
+    match &state.phase {
+        UninstallPhase::Confirm => {
+            lines.push(Line::from(Span::styled(
+                " Stop the service and remove the server binary.",
+                Style::default().fg(AUTOCOMPLETE_TOP_COLOR),
+            )));
+            lines.push(Line::from(Span::styled(
+                " Config and sessions in ~/.ein/ will be preserved.",
+                Style::default().fg(MUTED_COLOR),
+            )));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    " [Y]",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Confirm   ", Style::default().fg(MUTED_COLOR)),
+                Span::styled(
+                    "[N]",
+                    Style::default()
+                        .fg(DISCONNECTED_COLOR)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" Cancel", Style::default().fg(MUTED_COLOR)),
+            ]));
+        }
+        UninstallPhase::Running => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", SPINNER[tick as usize % SPINNER.len()]),
+                    Style::default().fg(THINKING_COLOR),
+                ),
+                Span::styled(
+                    "Uninstalling…",
+                    Style::default()
+                        .fg(MUTED_COLOR)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
+        UninstallPhase::Done { success } => {
+            for step in &state.log {
+                lines.push(Line::from(Span::styled(
+                    format!(" {step}"),
+                    Style::default().fg(if *success {
+                        Color::Green
+                    } else {
+                        DISCONNECTED_COLOR
+                    }),
+                )));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                " Press any key to dismiss",
+                Style::default()
+                    .fg(MUTED_COLOR)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+        }
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

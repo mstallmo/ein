@@ -134,7 +134,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("f.txt");
         let result = call(path.to_str().unwrap(), "abc").unwrap();
-        assert!(result.content.contains('3'), "expected byte count in: {}", result.content);
-        assert!(result.content.contains(path.to_str().unwrap()), "expected path in: {}", result.content);
+        assert!(
+            result.content.contains('3'),
+            "expected byte count in: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains(path.to_str().unwrap()),
+            "expected path in: {}",
+            result.content
+        );
     }
 }

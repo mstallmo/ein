@@ -38,15 +38,13 @@ fn map_http_error(status: u16, body: &str) -> Option<anyhow::Error> {
             ))
         }
         402 => {
-            let msg =
-                extract_api_error(body).unwrap_or_else(|| "Insufficient credits".to_owned());
+            let msg = extract_api_error(body).unwrap_or_else(|| "Insufficient credits".to_owned());
             Some(anyhow!(
                 "{msg}\n\nCheck your account balance at openrouter.ai."
             ))
         }
         404 => {
-            let msg =
-                extract_api_error(body).unwrap_or_else(|| "Resource not found".to_owned());
+            let msg = extract_api_error(body).unwrap_or_else(|| "Resource not found".to_owned());
             Some(anyhow!("{msg}"))
         }
         s if !(200..300).contains(&s) => {
@@ -194,7 +192,10 @@ mod tests {
     fn map_http_error_402_mentions_credits_and_balance() {
         let err = map_http_error(402, "{}").unwrap();
         let msg = err.to_string();
-        assert!(msg.contains("openrouter.ai"), "expected openrouter.ai link in: {msg}");
+        assert!(
+            msg.contains("openrouter.ai"),
+            "expected openrouter.ai link in: {msg}"
+        );
     }
 
     #[test]

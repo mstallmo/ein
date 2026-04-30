@@ -192,7 +192,10 @@ mod tests {
     #[test]
     fn read_truncation_header_shows_range_and_total() {
         // 10 lines, read only first 4
-        let content = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let f = write_temp(&content);
         let out = call(f.path().to_str().unwrap(), None, Some(4)).unwrap();
         assert!(out.starts_with("Lines 1-4 of 10"), "got: {out}");
@@ -201,7 +204,10 @@ mod tests {
 
     #[test]
     fn read_truncation_header_reflects_offset() {
-        let content = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let f = write_temp(&content);
         let out = call(f.path().to_str().unwrap(), Some(3), Some(3)).unwrap();
         // offset=3, limit=3 → lines 4-6 (1-based), 4 remain → header

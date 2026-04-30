@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/ein",
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
@@ -9,7 +8,6 @@ members = [
     "packages/*",
 ]
 default-members = [
-    "crates/ein",
     "crates/ein-server",
     "crates/ein-tui",
     "crates/ein-proto",
@@ -37,8 +35,7 @@ targets = [
     "x86_64-unknown-linux-gnu",
 ]
 pr-run-mode = "plan"
-# Only distribute the meta-package; individual crates are excluded from releases.
-members = ["crates/ein"]
+members = ["crates/ein-tui", "crates/ein-server"]
 # Allow manual edits to the generated workflow (we add a protoc install step).
 allow-dirty = ["ci"]
 

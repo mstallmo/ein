@@ -7,6 +7,7 @@
 //! meta-package binary can share the same entry-point without duplicating code.
 
 mod app;
+mod bootstrap;
 mod config;
 mod connection;
 mod input;
@@ -14,7 +15,7 @@ mod render;
 
 use crate::app::{
     App, AppEvent, ConnectionStatus, CwdState, DisplayMessage, Modal, PluginModalState,
-    SessionPickerState, SetupWizardState,
+    SessionPickerState, SetupWizardState, UninstallPhase,
 };
 use crate::config::load_or_create_config;
 use crate::connection::{
@@ -96,6 +97,18 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     };
 
     info!(server_addr = %args.server_addr, "ein-tui starting");
+
+    // In release builds: download ein-server if absent, then register it as a
+    // system service. Runs before raw mode so stdout is visible for progress.
+    #[cfg(not(debug_assertions))]
+    {
+        let bin = bootstrap::server_bin_path();
+        if !bin.exists() {
+            println!("Downloading ein-server {}...", env!("CARGO_PKG_VERSION"));
+            bootstrap::download_server(env!("CARGO_PKG_VERSION")).await?;
+        }
+        bootstrap::ensure_service_installed().await?;
+    }
 
     // Load (or create) the client config before opening the gRPC session.
     let cfg = load_or_create_config()?;
@@ -302,6 +315,43 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     KeyAction::OpenSetupWizard => {
                         app.modal = Some(Modal::SetupWizard(SetupWizardState::new()));
                     }
+                    KeyAction::RunUninstall => {
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            #[cfg(not(debug_assertions))]
+                            {
+                                match bootstrap::uninstall().await {
+                                    Ok(steps) => {
+                                        let _ = tx
+                                            .send(AppEvent::UninstallComplete {
+                                                success: true,
+                                                steps,
+                                            })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx
+                                            .send(AppEvent::UninstallComplete {
+                                                success: false,
+                                                steps: vec![format!("Error: {e}")],
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                            #[cfg(debug_assertions)]
+                            {
+                                let _ = tx
+                                    .send(AppEvent::UninstallComplete {
+                                        success: true,
+                                        steps: vec![
+                                            "(debug build — service removal skipped)".to_string()
+                                        ],
+                                    })
+                                    .await;
+                            }
+                        });
+                    }
                     KeyAction::SetupComplete => {
                         app.prompt_tx = None;
                         app.connection_status = ConnectionStatus::Connecting;
@@ -415,6 +465,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                                     source.installed = true;
                                 }
                             }
+                        }
+                    }
+                    AppEvent::UninstallComplete { success, steps } => {
+                        if let Some(Modal::UninstallConfirm(s)) = &mut app.modal {
+                            s.phase = UninstallPhase::Done { success };
+                            s.log = steps;
                         }
                     }
                 }

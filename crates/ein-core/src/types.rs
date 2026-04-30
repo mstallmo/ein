@@ -419,9 +419,6 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         let decoded: CompletionResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            decoded.error.unwrap()["message"],
-            "insufficient credits"
-        );
+        assert_eq!(decoded.error.unwrap()["message"], "insufficient credits");
     }
 }

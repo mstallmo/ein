@@ -30,6 +30,8 @@ pub(crate) enum AppEvent {
     PluginStatusLoaded(Vec<PluginSourceStatus>),
     /// A plugin install RPC completed; carries success flag and a status message.
     PluginInstallResult { success: bool, message: String },
+    /// Background uninstall task finished; carry the step log and outcome.
+    UninstallComplete { success: bool, steps: Vec<String> },
 }
 
 /// Whether the TUI currently has a live server connection.
@@ -198,6 +200,8 @@ pub(crate) enum Modal {
     SessionPicker(SessionPickerState),
     /// CWD access prompt, shown after choosing "New Session".
     CwdPrompt(CwdState),
+    /// Uninstall confirmation / progress / result, opened via `/uninstall`.
+    UninstallConfirm(UninstallModalState),
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +231,21 @@ pub(crate) struct SessionPickerState {
     pub(crate) selected: usize,
     /// One-shot channel back to `try_connect`; sends the chosen `SessionConfig`.
     pub(crate) session_tx: oneshot::Sender<SessionConfig>,
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall modal state
+// ---------------------------------------------------------------------------
+
+pub(crate) enum UninstallPhase {
+    Confirm,
+    Running,
+    Done { success: bool },
+}
+
+pub(crate) struct UninstallModalState {
+    pub(crate) phase: UninstallPhase,
+    pub(crate) log: Vec<String>,
 }
 
 /// State for the CWD access modal, shown only when "New Session" is chosen.
