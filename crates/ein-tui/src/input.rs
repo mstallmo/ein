@@ -6,7 +6,8 @@ use ein_proto::ein::{UserInput, agent_event::Event as ServerEvent, user_input};
 use tracing::{debug, info, warn};
 
 use crate::app::{
-    App, CwdState, DisplayMessage, Modal, SessionPickerState, SetupWizardState, WizardStep,
+    App, CwdState, DisplayMessage, Modal, SessionPickerState, SetupWizardState, UninstallModalState,
+    UninstallPhase, WizardStep,
 };
 use crate::connection::to_proto_session_config;
 
@@ -56,6 +57,10 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
         name: "/setup",
         description: "Run the first-time setup wizard",
     },
+    CommandDef {
+        name: "/uninstall",
+        description: "Stop and remove the ein-server service and binary",
+    },
 ];
 
 /// Recomputes `autocomplete_matches` and `autocomplete_active` based on the
@@ -102,6 +107,8 @@ pub(crate) enum KeyAction {
     OpenSetupWizard,
     /// Setup wizard saved config; trigger an immediate reconnect.
     SetupComplete,
+    /// User confirmed uninstall; spawn the background removal task.
+    RunUninstall,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +131,7 @@ pub(crate) async fn handle_key_event(app: &mut App, key: KeyEvent) -> KeyAction 
         Some(Modal::PluginManager(_)) => handle_plugin_modal_key(app, key),
         Some(Modal::SessionPicker(_)) => handle_session_picker_key(app, key).await,
         Some(Modal::CwdPrompt(_)) => handle_cwd_modal_key(app, key),
+        Some(Modal::UninstallConfirm(_)) => handle_uninstall_modal_key(app, key),
         None => handle_normal_key(app, key).await,
     }
 }
@@ -414,6 +422,39 @@ fn handle_cwd_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
     KeyAction::Continue
 }
 
+fn handle_uninstall_modal_key(app: &mut App, key: KeyEvent) -> KeyAction {
+    let phase = match &app.modal {
+        Some(Modal::UninstallConfirm(s)) => match s.phase {
+            UninstallPhase::Confirm => 0,
+            UninstallPhase::Running => 1,
+            UninstallPhase::Done { .. } => 2,
+        },
+        _ => return KeyAction::Continue,
+    };
+
+    match phase {
+        0 => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(Modal::UninstallConfirm(s)) = &mut app.modal {
+                    s.phase = UninstallPhase::Running;
+                }
+                KeyAction::RunUninstall
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.modal = None;
+                KeyAction::Continue
+            }
+            _ => KeyAction::Continue,
+        },
+        1 => KeyAction::Continue, // block input while running
+        _ => {
+            // Done phase — any key closes the modal and returns to main screen.
+            app.modal = None;
+            KeyAction::Continue
+        }
+    }
+}
+
 async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
     match key.code {
         KeyCode::Enter => {
@@ -481,6 +522,13 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyAction {
                 "/plugins" => return KeyAction::OpenPluginModal,
                 "/sessions" => return KeyAction::OpenSessionPicker,
                 "/setup" => return KeyAction::OpenSetupWizard,
+                "/uninstall" => {
+                    app.modal = Some(Modal::UninstallConfirm(UninstallModalState {
+                        phase: UninstallPhase::Confirm,
+                        log: vec![],
+                    }));
+                    return KeyAction::Continue;
+                }
                 _ => {
                     // Reject unrecognized slash commands — display a local error, do not send to server.
                     if text.starts_with('/') {

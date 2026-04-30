@@ -49,7 +49,8 @@ pub async fn download_server(version: &str) -> Result<()> {
     let ver = version.trim_start_matches('v');
     let tag = format!("v{ver}");
     let triple = target_triple();
-    let archive_name = format!("ein-server-{tag}-{triple}.tar.gz");
+    // cargo-dist names archives as "{package}-{triple}.tar.gz" (no version in filename).
+    let archive_name = format!("ein-server-{triple}.tar.gz");
     let url = format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{archive_name}");
 
     let dest = server_bin_path();
@@ -57,7 +58,7 @@ pub async fn download_server(version: &str) -> Result<()> {
         .await
         .context("failed to create ~/.ein/bin")?;
 
-    println!("Downloading {archive_name}...");
+    println!("Downloading {url}...");
 
     let response = reqwest::get(&url)
         .await
@@ -133,6 +134,77 @@ pub async fn ensure_service_installed() -> Result<()> {
     return ensure_systemd_installed().await;
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall
+// ---------------------------------------------------------------------------
+
+/// Stops and removes the `ein-server` service and binary installed by
+/// [`ensure_service_installed`] and [`download_server`].
+///
+/// Returns a list of completed step descriptions for display in the TUI.
+/// User config and session data in `~/.ein/` are left intact.
+pub async fn uninstall() -> Result<Vec<String>> {
+    let mut steps: Vec<String> = Vec::new();
+    #[cfg(target_os = "macos")]
+    uninstall_launchagent(&mut steps).await?;
+    #[cfg(target_os = "linux")]
+    uninstall_systemd(&mut steps).await?;
+    remove_server_binary(&mut steps).await?;
+    Ok(steps)
+}
+
+async fn remove_server_binary(steps: &mut Vec<String>) -> Result<()> {
+    let path = server_bin_path();
+    if path.exists() {
+        fs::remove_file(&path)
+            .await
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+        steps.push(format!("Removed {}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn uninstall_launchagent(steps: &mut Vec<String>) -> Result<()> {
+    let plist = launchagent_plist_path();
+    // Ignore errors — the service may already be stopped/unloaded.
+    let _ = Command::new("launchctl")
+        .args(["unload", plist.to_str().unwrap_or("")])
+        .output()
+        .await;
+    if plist.exists() {
+        fs::remove_file(&plist)
+            .await
+            .with_context(|| format!("failed to remove {}", plist.display()))?;
+        steps.push(format!("Removed LaunchAgent ({})", LAUNCH_AGENT_LABEL));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn uninstall_systemd(steps: &mut Vec<String>) -> Result<()> {
+    let unit = systemd_unit_path();
+    let _ = Command::new("systemctl")
+        .args(["--user", "stop", SYSTEMD_SERVICE_NAME])
+        .output()
+        .await;
+    let _ = Command::new("systemctl")
+        .args(["--user", "disable", SYSTEMD_SERVICE_NAME])
+        .output()
+        .await;
+    if unit.exists() {
+        fs::remove_file(&unit)
+            .await
+            .with_context(|| format!("failed to remove {}", unit.display()))?;
+        steps.push(format!("Removed systemd user service ({})", SYSTEMD_SERVICE_NAME));
+    }
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output()
+        .await;
     Ok(())
 }
 
