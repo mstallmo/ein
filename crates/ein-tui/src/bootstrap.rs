@@ -9,12 +9,12 @@
 #![cfg_attr(debug_assertions, allow(dead_code))]
 
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
 use std::{
     io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
+use xz2::read::XzDecoder;
 use tar::Archive;
 use tokio::{fs, process::Command, task};
 
@@ -49,8 +49,8 @@ pub async fn download_server(version: &str) -> Result<()> {
     let ver = version.trim_start_matches('v');
     let tag = format!("v{ver}");
     let triple = target_triple();
-    // cargo-dist names archives as "{package}-{triple}.tar.gz" (no version in filename).
-    let archive_name = format!("ein-server-{triple}.tar.gz");
+    // cargo-dist names archives as "{package}-{triple}.tar.xz" (no version in filename).
+    let archive_name = format!("ein-server-{triple}.tar.xz");
     let url = format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{archive_name}");
 
     let dest = server_bin_path();
@@ -87,10 +87,10 @@ pub async fn download_server(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Extracts the `ein-server` binary from a tar.gz archive into `dest`.
+/// Extracts the `ein-server` binary from a tar.xz archive into `dest`.
 fn extract_server(bytes: &[u8], dest: &Path) -> Result<()> {
-    let gz = GzDecoder::new(io::Cursor::new(bytes));
-    let mut archive = Archive::new(gz);
+    let xz = XzDecoder::new(io::Cursor::new(bytes));
+    let mut archive = Archive::new(xz);
 
     for entry in archive
         .entries()
@@ -199,7 +199,10 @@ async fn uninstall_systemd(steps: &mut Vec<String>) -> Result<()> {
         fs::remove_file(&unit)
             .await
             .with_context(|| format!("failed to remove {}", unit.display()))?;
-        steps.push(format!("Removed systemd user service ({})", SYSTEMD_SERVICE_NAME));
+        steps.push(format!(
+            "Removed systemd user service ({})",
+            SYSTEMD_SERVICE_NAME
+        ));
     }
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
