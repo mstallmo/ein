@@ -1,13 +1,10 @@
 [package]
-name = "ein-proto"
+name = "ein_core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
-prost = { workspace = true }
-tonic = { workspace = true }
-
-[build-dependencies]
-tonic-build = "0.12"
+serde              = { workspace = true }
+serde_json         = { workspace = true }

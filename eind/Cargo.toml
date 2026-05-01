@@ -21,8 +21,8 @@ anyhow             = { workspace = true }
 async-trait        = "0.1"
 clap               = { version = "4.3.14", features = ["derive"] }
 dirs               = "6.0.0"
-ein-agent          = { path = "../crates/ein-agent" }
-ein-proto          = { path = "../crates/ein-proto" }
+ein_agent          = { path = "../crates/ein_agent" }
+ein_proto          = { path = "../crates/ein_proto" }
 ein_plugin         = { path = "../crates/ein_plugin" }
 futures            = { workspace = true }
 serde              = { workspace = true }

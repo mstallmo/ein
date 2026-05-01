@@ -1,4 +1,4 @@
-# Roadmap: MCP Server Support for `ein-agent`
+# Roadmap: MCP Server Support for `ein_agent`
 
 _Date: 2026-04-20_
 
@@ -6,7 +6,7 @@ _Date: 2026-04-20_
 
 ## Goal
 
-Make `ein-agent` a competitive Rust SDK for building MCP servers. The primary differentiator is WASM-sandboxed tool execution — deny-by-default filesystem and network access per tool, with explicit per-tool capability grants. The Vercel/Context.ai incident (April 2026) demonstrated that the current generation of MCP tools has no answer to a compromised server exfiltrating OAuth tokens. Ein's existing WASM runtime directly addresses this, and the timing is good.
+Make `ein_agent` a competitive Rust SDK for building MCP servers. The primary differentiator is WASM-sandboxed tool execution — deny-by-default filesystem and network access per tool, with explicit per-tool capability grants. The Vercel/Context.ai incident (April 2026) demonstrated that the current generation of MCP tools has no answer to a compromised server exfiltrating OAuth tokens. Ein's existing WASM runtime directly addresses this, and the timing is good.
 
 The target bar is parity with the official `rmcp` SDK on protocol coverage and ergonomics, with WASM sandboxing as a clear security advantage over everything in the ecosystem.
 
@@ -27,7 +27,7 @@ None of them provide sandboxed tool execution. The post-Vercel conversation abou
 
 ## Phases
 
-### Phase 1: `ein-agent` trait improvements (prerequisite)
+### Phase 1: `ein_agent` trait improvements (prerequisite)
 
 These changes are required before any MCP work begins. They unblock concurrent MCP calls and remove constraints that don't make sense for a server use case.
 
@@ -84,7 +84,7 @@ Full type coverage of the MCP 2025-11-25 spec:
 - Error codes and error objects
 - Notification types (`notifications/cancelled`, etc.)
 
-Use `serde` for serialization. Keep these types in `ein-core` so they can be shared with a future MCP client.
+Use `serde` for serialization. Keep these types in `ein_core` so they can be shared with a future MCP client.
 
 **Capability negotiation**
 
@@ -296,7 +296,7 @@ Target the `2025-11-25` spec version. Implement remaining notifications, paginat
 
 ---
 
-### Phase 7: MCP client in `ein-agent`
+### Phase 7: MCP client in `ein_agent`
 
 Close the loop: let Ein agents consume tools from any MCP server, not just tools registered locally. This makes Ein bidirectional.
 
@@ -321,13 +321,13 @@ This also enables Ein to act as a **proxy**: an Ein `McpServer` can front a `Mcp
 
 ```
 crates/
-  ein-core/       existing — add MCP JSON-RPC types here
-  ein-agent/      existing — Phase 1 trait improvements
-  ein-mcp/        new — McpServer, transports, auth middleware
-  ein-mcp-macros/ new — #[mcp_tool], #[mcp_server] proc macros
+  ein_core/       existing — add MCP JSON-RPC types here
+  ein_agent/      existing — Phase 1 trait improvements
+  ein_mcp/        new — McpServer, transports, auth middleware
+  ein_mcp_macros/ new — #[mcp_tool], #[mcp_server] proc macros
 ```
 
-`ein-mcp` depends on `ein-agent` (for `ToolSet`) and `ein-core` (for shared types). The macro crate is a separate proc-macro crate depended on by `ein-mcp`.
+`ein_mcp` depends on `ein-agent` (for `ToolSet`) and `ein_core` (for shared types). The macro crate is a separate proc-macro crate depended on by `ein_mcp`.
 
 ---
 

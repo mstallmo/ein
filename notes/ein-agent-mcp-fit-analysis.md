@@ -1,4 +1,4 @@
-# `ein-agent` Architecture Fit for MCP Server Building
+# `ein_agent` Architecture Fit for MCP Server Building
 
 _Evaluation Date: 2026-04-20_
 
@@ -6,17 +6,17 @@ _Evaluation Date: 2026-04-20_
 
 ## Summary
 
-The `ein-agent` architecture maps well onto the *client* side of MCP but is missing the abstractions needed to be a proper MCP *server* framework. It is well-positioned to grow in that direction, but there are meaningful gaps.
+The `ein_agent` architecture maps well onto the *client* side of MCP but is missing the abstractions needed to be a proper MCP *server* framework. It is well-positioned to grow in that direction, but there are meaningful gaps.
 
 ---
 
 ## What Maps Cleanly
 
-### `Tool` / `ToolSet` traits (`crates/ein-agent/src/tools/mod.rs`)
+### `Tool` / `ToolSet` traits (`crates/ein_agent/src/tools/mod.rs`)
 
 The best fit. MCP's core concept is a server that exposes named tools with JSON schemas — that is exactly what `Tool` and `ToolSet` model. An MCP server implementation would be a new `ToolSet` adapter that routes calls to MCP rather than local functions.
 
-### `ToolDef` / `ToolFunction` / `ToolFunctionParams` (`crates/ein-core/src/types.rs`)
+### `ToolDef` / `ToolFunction` / `ToolFunctionParams` (`crates/ein_core/src/types.rs`)
 
 Already serialize to OpenAI function-calling format, which is structurally identical to MCP's tool definition schema. Very little translation needed.
 

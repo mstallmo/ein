@@ -979,7 +979,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
- "ein-proto",
+ "ein_proto",
  "notify",
  "ratatui",
  "reqwest",
@@ -997,35 +997,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "ein-agent"
+name = "ein_agent"
 version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-trait",
- "ein-core",
+ "ein_core",
  "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "ein-core"
-version = "0.1.8"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ein-proto"
-version = "0.1.8"
-dependencies = [
- "prost",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]
@@ -1048,6 +1031,14 @@ dependencies = [
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
+]
+
+[[package]]
+name = "ein_core"
+version = "0.1.8"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1110,11 +1101,20 @@ name = "ein_plugin"
 version = "0.1.8"
 dependencies = [
  "anyhow",
- "ein-core",
+ "ein_core",
  "ein_http",
  "serde",
  "serde_json",
  "wit-bindgen 0.53.1",
+]
+
+[[package]]
+name = "ein_proto"
+version = "0.1.8"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -1149,9 +1149,9 @@ dependencies = [
  "async-trait",
  "clap",
  "dirs",
- "ein-agent",
- "ein-proto",
+ "ein_agent",
  "ein_plugin",
+ "ein_proto",
  "futures",
  "hyper",
  "reqwest",

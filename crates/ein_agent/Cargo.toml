@@ -1,5 +1,5 @@
 [package]
-name = "ein-agent"
+name = "ein_agent"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow             = { workspace = true }
 async-trait        = "0.1"
-ein-core           = { path = "../ein-core" }
+ein_core           = { path = "../ein_core" }
 futures            = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

@@ -269,7 +269,7 @@ Tools are WASM components loaded at startup. Four are included out of the box:
 
 ```
 crates/
-  ein-proto/    Protocol Buffer definitions (gRPC service + message types)
+  ein_proto/    Protocol Buffer definitions (gRPC service + message types)
 ein/      Terminal UI client
 eind/     gRPC server — agent loop, WASM plugin host, session persistence
 packages/
@@ -288,7 +288,7 @@ packages/
 
 ### Protocol
 
-The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional streaming RPC (`AgentSession`), a unary `ListSessions` RPC, and a unary `DeleteSession` RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map + optional `session_id` for resume), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output — starting with a `SessionStarted` event carrying the session's UUID, a `resumed` boolean, and the prior conversation history when resuming.
+The protocol (`crates/ein_proto/proto/ein.proto`) defines a bidirectional streaming RPC (`AgentSession`), a unary `ListSessions` RPC, and a unary `DeleteSession` RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map + optional `session_id` for resume), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output — starting with a `SessionStarted` event carrying the session's UUID, a `resumed` boolean, and the prior conversation history when resuming.
 
 `UserInput` variants after `init`:
 - `prompt` — a user message driving `run_agent`

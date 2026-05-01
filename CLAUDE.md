@@ -68,7 +68,7 @@ The server creates `~/.ein/sessions.db` on first run to persist session history.
 └─────────────────────────────┘          └──────────────────────────────┘
 ```
 
-The protocol is defined in `crates/ein-proto/proto/ein.proto`. The client streams `UserInput` messages; the server streams back `AgentEvent` messages (`SessionStarted`, `ContentDelta`, `ToolCallStart`, `ToolCallEnd`, `ToolOutputChunk`, `AgentFinished`, `AgentError`, `TokenUsage`).
+The protocol is defined in `crates/ein_proto/proto/ein.proto`. The client streams `UserInput` messages; the server streams back `AgentEvent` messages (`SessionStarted`, `ContentDelta`, `ToolCallStart`, `ToolCallEnd`, `ToolOutputChunk`, `AgentFinished`, `AgentError`, `TokenUsage`).
 
 ### Session lifecycle
 
