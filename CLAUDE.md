@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Ein
 
-Ein is a Rust-based AI agent framework with a client-server architecture. A gRPC server drives an LLM agent loop and executes tools implemented as pluggable WASM modules. Multiple model client plugins are supported (OpenRouter, Anthropic, OpenAI, Ollama). A terminal UI client (`ein-tui`) connects to the server and provides an interactive chat interface. Sessions are persisted to SQLite so conversations can be resumed across reconnects.
+Ein is a Rust-based AI agent framework with a client-server architecture. A gRPC server drives an LLM agent loop and executes tools implemented as pluggable WASM modules. Multiple model client plugins are supported (OpenRouter, Anthropic, OpenAI, Ollama). A terminal UI client (`ein`) connects to the server and provides an interactive chat interface. Sessions are persisted to SQLite so conversations can be resumed across reconnects.
 
 ## Setup
 
 ```bash
 rustup target add wasm32-wasip2
 cargo build                          # Build all crates
-cargo build -p ein-tui               # Build just the TUI client
+cargo build -p ein                   # Build just the TUI client
 cargo build -p eind                  # Build just the server
 ```
 
@@ -45,10 +45,10 @@ Credentials are configured in `~/.ein/config.json` (created on first TUI launch)
 cargo run --bin eind
 
 # Terminal 2 — start the TUI (connects to localhost:50051 by default)
-cargo run --bin ein-tui
+cargo run --bin ein
 
 # Optional: connect to a non-default server address
-cargo run -p ein-tui -- http://my-server:50051
+cargo run -p ein -- http://my-server:50051
 ```
 
 The server creates `~/.ein/sessions.db` on first run to persist session history.
@@ -59,7 +59,7 @@ The server creates `~/.ein/sessions.db` on first run to persist session history.
 
 ```
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│          ein-tui            │  gRPC    │          eind                │
+│          ein                │  gRPC    │          eind                │
 │                             │ (proto)  │                              │
 │  Ratatui terminal UI        │◄────────►│  Agent loop + tool executor  │
 │  Keyboard / render loop     │          │  WASM plugin host            │
@@ -105,7 +105,7 @@ Sessions are persisted to a SQLite database at `~/.ein/sessions.db` (opened on s
 
 Database migrations live in `eind/migrations/`.
 
-### Client config (`crates/ein-tui/src/config.rs`)
+### Client config (`ein/src/config.rs`)
 
 `ClientConfig` is loaded from (or created at) `~/.ein/config.json` on TUI startup. Structure mirrors `SessionConfig`. At startup the TUI shows a floating modal asking whether to add the current working directory to `allowed_paths` for that session; this is never persisted to `config.json`.
 
@@ -129,9 +129,9 @@ Legacy flat config files (with top-level `api_key`, `base_url`, `model`, `max_to
 
 **Plugin loading** (`src/tools.rs`): scans the plugin directory for `.wasm` files and instantiates each as a Wasmtime component. The filename stem (e.g. `ein_bash`) is used as the plugin's config identity to look up its entry in `plugin_configs`; global `allowed_paths`/`allowed_hosts` are merged with any plugin-specific overrides before the WASI context is built. After instantiation, `name()`/`schema()` are called to get the display name (e.g. `"Bash"`) and tool schema exposed to the model. In debug mode both tool and model client plugins are loaded from `./target/wasm32-wasip2/debug/`; in release mode tool plugins come from `~/.ein/plugins/tools/` and model client plugins from `~/.ein/plugins/model_clients/`.
 
-### TUI (`crates/ein-tui/`)
+### TUI (`ein/`)
 
-Six source files under `crates/ein-tui/src/`:
+Six source files under `ein/src/`:
 
 | File | Role |
 |------|------|

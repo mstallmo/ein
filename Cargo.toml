@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "eind",
-    "crates/ein-tui",
+    "ein",
     "crates/ein-proto",
     "crates/ein-agent",
     "crates/ein-core",
@@ -9,7 +9,7 @@ members = [
 ]
 default-members = [
     "eind",
-    "crates/ein-tui",
+    "ein",
     "crates/ein-proto",
     "crates/ein-agent",
     "crates/ein-core",
@@ -35,7 +35,7 @@ targets = [
     "x86_64-unknown-linux-gnu",
 ]
 pr-run-mode = "plan"
-members = ["crates/ein-tui"]
+members = ["ein"]
 # Allow manual edits to the generated workflow (we add a protoc install step).
 allow-dirty = ["ci"]
 

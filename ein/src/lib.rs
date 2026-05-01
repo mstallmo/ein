@@ -3,7 +3,7 @@
 
 //! Ein TUI library.
 //!
-//! Exposes [`run`] so both the standalone `ein-tui` binary and the `ein`
+//! Exposes [`run`] so both the standalone `ein` binary and the `ein`
 //! meta-package binary can share the same entry-point without duplicating code.
 
 mod app;
@@ -96,7 +96,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         None
     };
 
-    info!(server_addr = %args.server_addr, "ein-tui starting");
+    info!(server_addr = %args.server_addr, "ein starting");
 
     // In release builds: download eind if absent, then register it as a
     // system service. Runs before raw mode so stdout is visible for progress.

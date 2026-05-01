@@ -4,7 +4,7 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop a
 
 ```
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│          ein-tui            │  gRPC    │          eind                │
+│          ein                │  gRPC    │          eind                │
 │                             │ (proto)  │                              │
 │  Ratatui terminal UI        │◄────────►│  Agent loop + tool executor  │
 │  Session picker on startup  │          │  WASM plugin host            │
@@ -23,10 +23,10 @@ cargo install cargo-binstall
 cargo binstall --git https://github.com/mstallmo/ein ein
 ```
 
-This installs both `ein-tui` (terminal UI) and `eind` (gRPC agent server). You can also install them individually:
+This installs both `ein` (terminal UI) and `eind` (gRPC agent server). You can also install them individually:
 
 ```bash
-cargo binstall --git https://github.com/mstallmo/ein ein-tui
+cargo binstall --git https://github.com/mstallmo/ein ein
 cargo binstall --git https://github.com/mstallmo/ein eind
 ```
 
@@ -134,19 +134,19 @@ cargo run --bin eind
 Start the TUI client in another:
 
 ```bash
-cargo run --bin ein-tui
+cargo run --bin ein
 ```
 
 The TUI connects to `localhost:50051` by default. To connect to a different address:
 
 ```bash
-cargo run --bin ein-tui -- http://my-server:50051
+cargo run --bin ein -- http://my-server:50051
 ```
 
 To enable debug logging to `~/.ein/tui.log`:
 
 ```bash
-cargo run --bin ein-tui -- --debug
+cargo run --bin ein -- --debug
 ```
 
 On first connection a **session picker** modal appears. Use `↑`/`↓` to navigate, `Enter` to select:
@@ -270,8 +270,8 @@ Tools are WASM components loaded at startup. Four are included out of the box:
 ```
 crates/
   ein-proto/    Protocol Buffer definitions (gRPC service + message types)
-  eind/         gRPC server — agent loop, WASM plugin host, session persistence
-  ein-tui/      Terminal UI client
+ein/      Terminal UI client
+eind/     gRPC server — agent loop, WASM plugin host, session persistence
 packages/
   ein_tool/         WASM tool plugin interface (ToolPlugin trait, ToolDef, syscalls)
   ein_bash/         Bash tool plugin
@@ -302,7 +302,7 @@ The protocol (`crates/ein-proto/proto/ein.proto`) defines a bidirectional stream
 
 Sessions are persisted to `~/.ein/sessions.db`. Supplying a previously assigned `session_id` in `SessionConfig` causes the server to restore the full conversation history and resume as if the session never disconnected.
 
-### TUI modules (`crates/ein-tui/src/`)
+### TUI modules (`ein/src/`)
 
 | File | Role |
 |------|------|
@@ -329,7 +329,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. Th
 
 ## Releasing
 
-Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/). Only the `crates/ein` meta-package is distributed — it includes both the `ein-tui` and `eind` binaries.
+Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/).
 
 **1. Bump the version**
 

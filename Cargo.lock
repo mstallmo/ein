@@ -971,6 +971,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "ein"
+version = "0.1.8"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "ein-proto",
+ "notify",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tar",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "xz2",
+]
+
+[[package]]
 name = "ein-agent"
 version = "0.1.8"
 dependencies = [
@@ -1000,32 +1026,6 @@ dependencies = [
  "prost",
  "tonic",
  "tonic-build",
-]
-
-[[package]]
-name = "ein-tui"
-version = "0.1.8"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "ein-proto",
- "notify",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "syntect",
- "tar",
- "tokio",
- "tokio-stream",
- "tonic",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "xz2",
 ]
 
 [[package]]
