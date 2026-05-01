@@ -186,13 +186,13 @@ jobs:
       - name: Build WASM plugins
         run: |
           cargo metadata --no-deps --format-version 1 | \
-            jq -r '.packages[] |
-              select(.manifest_path | test("/packages/")) |
+            jq -r '.plugins[] |
+              select(.manifest_path | test("/plugins/")) |
               select(any(.targets[]; .kind[] == "cdylib")) |
               .name' | \
-            while read -r pkg; do
-              echo "Building $pkg..."
-              cargo build --release -p "$pkg" --target wasm32-wasip2
+            while read -r plg; do
+              echo "Building $plg..."
+              cargo build --release -p "$plg" --target wasm32-wasip2
             done
       - name: Package plugins
         run: |
@@ -201,8 +201,8 @@ jobs:
           mkdir -p dist-plugins/tools dist-plugins/model_clients
 
           cargo metadata --no-deps --format-version 1 | \
-            jq -r '.packages[] |
-              select(.manifest_path | test("/packages/")) |
+            jq -r '.plugins[] |
+              select(.manifest_path | test("/plugins/")) |
               select(any(.targets[]; .kind[] == "cdylib")) |
               select(.metadata.ein.plugin_type != null) |
               [.name, .metadata.ein.plugin_type] | @tsv' | \

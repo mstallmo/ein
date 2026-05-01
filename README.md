@@ -261,7 +261,7 @@ Tools are WASM components loaded at startup. Four are included out of the box:
 
 ### Adding a tool
 
-1. Create a new package under `packages/` implementing the `ToolPlugin` trait from `packages/ein_tool/`
+1. Create a new package under `plugins/` implementing the `ToolPlugin` trait from `plugins/ein_tool/`
 2. Add it to `scripts/build_install_plugins.sh`
 3. Rebuild — the server picks it up automatically on next start
 
@@ -269,21 +269,22 @@ Tools are WASM components loaded at startup. Four are included out of the box:
 
 ```
 crates/
-  ein_proto/    Protocol Buffer definitions (gRPC service + message types)
-ein/      Terminal UI client
-eind/     gRPC server — agent loop, WASM plugin host, session persistence
-packages/
-  ein_tool/         WASM tool plugin interface (ToolPlugin trait, ToolDef, syscalls)
+  ein_agent/        Agent component (agent loop, tool call logic, extension interface)
+  ein_core/         Shared types and utilities between plugins and the harness
+  ein_http/         WASM-native HTTP client (used by model client plugins)
+  ein_plugin/       WASM plugin interface
+  ein_proto/        Protocol Buffer definitions (gRPC service + message types)
+ein/                Terminal UI client
+eind/               gRPC server — WASM plugin host, session persistence
+plugins/
+  ein_anthropic/    Anthropic model client plugin
   ein_bash/         Bash tool plugin
+  ein_edit/         Edit tool plugin
+  ein_ollama/       Ollama model client plugin
+  ein_openai/       OpenAI model client plugin
+  ein_openrouter/   OpenRouter model client plugin
   ein_read/         Read tool plugin
   ein_write/        Write tool plugin
-  ein_edit/         Edit tool plugin
-  ein_model_client/ Shared model client types and WIT bindings
-  ein_http/         WASM-native HTTP client (used by model client plugins)
-  ein_openrouter/   OpenRouter model client plugin
-  ein_anthropic/    Anthropic model client plugin
-  ein_openai/       OpenAI model client plugin
-  ein_ollama/       Ollama model client plugin
 ```
 
 ### Protocol

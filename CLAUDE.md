@@ -185,9 +185,9 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 
 **Ctrl-C**: always force-quits, even while the agent is busy.
 
-### WASM plugin interface (`packages/`)
+### WASM plugin interface (`plugins/`)
 
-**Tool plugins** implement the `ToolPlugin` trait from `packages/ein_tool/` and declare their name, description, and JSON parameter schema via `ToolDef`. They are compiled to `wasm32-wasip2`.
+**Tool plugins** implement the `ToolPlugin` trait from `plugins/ein_tool/` and declare their name, description, and JSON parameter schema via `ToolDef`. They are compiled to `wasm32-wasip2`.
 
 | Package | Tool name | Description |
 |---------|-----------|-------------|
@@ -196,7 +196,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events.
 | `ein_write` | `Write` | Writes content to a file |
 | `ein_edit` | `Edit` | Replaces an exact string in a file with new content; returns `metadata` with `start_line`, `old_lines`, and `new_lines` for the TUI diff view |
 
-To add a new tool, create a package under `packages/` implementing `ToolPlugin`, add it to `build_install_plugins.sh`, and rebuild.
+To add a new tool, create a package under `plugins/` implementing `ToolPlugin`, add it to `build_install_plugins.sh`, and rebuild.
 
 **Model client plugins** implement the `ModelClient` WIT interface (`wit/model_client/`). The server compiles each plugin once at startup via `ModelClientSessionManager` and instantiates it per session with the session's credentials. The active plugin is selected by `model_client_name` in `SessionConfig`; if omitted the first available plugin is used.
 

@@ -132,7 +132,7 @@ New passages are appended. Entries are never mutated or deleted in-place (archiv
 
 ## Memory Tools (WASM Plugins)
 
-Four new tools are added as WASM plugins under `packages/`:
+Four new tools are added as WASM plugins under `plugins/`:
 
 ### `ein_core_memory`
 
@@ -296,8 +296,8 @@ The second session sees the `human` block already populated because `core.json` 
 
 ## Implementation Order
 
-1. Create `packages/ein_core_memory/` — preopened-dir file I/O + two tools
-2. Create `packages/ein_archival_memory/` — preopened-dir file I/O + BM25 search + two tools
+1. Create `plugins/ein_core_memory/` — preopened-dir file I/O + two tools
+2. Create `plugins/ein_archival_memory/` — preopened-dir file I/O + BM25 search + two tools
 3. Add `agent_id` and `memory_enabled` to proto + server `SessionConfig` handling
 4. Add core memory injection to `grpc.rs` session init (preopen memory dir, pass `memory_dir` config)
 5. Add post-tool core memory refresh in `agent.rs`

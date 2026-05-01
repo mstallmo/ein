@@ -2,19 +2,15 @@
 members = [
     "eind",
     "ein",
-    "crates/ein_proto",
-    "crates/ein_agent",
-    "crates/ein_core",
-    "crates/ein_http",
-    "crates/ein_plugin",
-    "packages/*",
+    "crates/*",
+    "plugins/*",
 ]
 default-members = [
     "eind",
     "ein",
-    "crates/ein_proto",
     "crates/ein_agent",
     "crates/ein_core",
+    "crates/ein_proto",
 ]
 resolver = "2"
 

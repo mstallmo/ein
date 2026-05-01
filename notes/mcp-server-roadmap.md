@@ -216,7 +216,7 @@ WasmMcpServer::builder()
     .await?;
 ```
 
-Each `.wasm` file is a WASM component implementing the `ToolPlugin` WIT interface (already defined in `packages/ein_tool/`). The filename stem is the tool's config identity.
+Each `.wasm` file is a WASM component implementing the `ToolPlugin` WIT interface (already defined in `crates/ein_plugin/`). The filename stem is the tool's config identity.
 
 **Per-tool capability config**
 
