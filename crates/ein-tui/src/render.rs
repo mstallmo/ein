@@ -766,13 +766,15 @@ fn render_uninstall_modal(state: &UninstallModalState, tick: u64, frame: &mut Fr
         UninstallPhase::Done { .. } => state.log.len().max(1) as u16 + 2,
     };
     let modal_height = 2 + 1 + content_lines;
-    let modal_width = (frame.area().width * 7 / 10).max(60).min(frame.area().width);
+    let modal_width = (frame.area().width * 7 / 10)
+        .max(60)
+        .min(frame.area().width);
     let area = centered_rect(modal_width, modal_height, frame.area());
 
     frame.render_widget(Clear, area);
 
     let (title, border_color) = match &state.phase {
-        UninstallPhase::Confirm => (" Uninstall ein-server? ", DISCONNECTED_COLOR),
+        UninstallPhase::Confirm => (" Uninstall eind? ", DISCONNECTED_COLOR),
         UninstallPhase::Running => (" Uninstalling… ", MUTED_COLOR),
         UninstallPhase::Done { success: true } => (" Uninstalled ", Color::Green),
         UninstallPhase::Done { success: false } => (" Uninstall failed ", DISCONNECTED_COLOR),

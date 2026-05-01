@@ -1003,34 +1003,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ein-server"
-version = "0.1.8"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "dirs",
- "ein-agent",
- "ein-proto",
- "ein_plugin",
- "futures",
- "hyper",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "tar",
- "tokio",
- "tokio-stream",
- "tonic",
- "uuid",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-http",
- "xz2",
-]
-
-[[package]]
 name = "ein-tui"
 version = "0.1.8"
 dependencies = [
@@ -1167,6 +1139,34 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wit-bindgen 0.53.1",
+]
+
+[[package]]
+name = "eind"
+version = "0.1.8"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "dirs",
+ "ein-agent",
+ "ein-proto",
+ "ein_plugin",
+ "futures",
+ "hyper",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tar",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "uuid",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
+ "xz2",
 ]
 
 [[package]]

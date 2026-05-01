@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/ein-server",
+    "eind",
     "crates/ein-tui",
     "crates/ein-proto",
     "crates/ein-agent",
@@ -8,7 +8,7 @@ members = [
     "packages/*",
 ]
 default-members = [
-    "crates/ein-server",
+    "eind",
     "crates/ein-tui",
     "crates/ein-proto",
     "crates/ein-agent",

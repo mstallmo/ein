@@ -4,7 +4,7 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop a
 
 ```
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│          ein-tui            │  gRPC    │          ein-server          │
+│          ein-tui            │  gRPC    │          eind                │
 │                             │ (proto)  │                              │
 │  Ratatui terminal UI        │◄────────►│  Agent loop + tool executor  │
 │  Session picker on startup  │          │  WASM plugin host            │
@@ -23,11 +23,11 @@ cargo install cargo-binstall
 cargo binstall --git https://github.com/mstallmo/ein ein
 ```
 
-This installs both `ein-tui` (terminal UI) and `ein-server` (gRPC agent server). You can also install them individually:
+This installs both `ein-tui` (terminal UI) and `eind` (gRPC agent server). You can also install them individually:
 
 ```bash
 cargo binstall --git https://github.com/mstallmo/ein ein-tui
-cargo binstall --git https://github.com/mstallmo/ein ein-server
+cargo binstall --git https://github.com/mstallmo/ein eind
 ```
 
 Or download archives directly from [GitHub Releases](https://github.com/mstallmo/ein/releases).
@@ -128,7 +128,7 @@ Add your model backend credentials to `~/.ein/config.json` (created automaticall
 Start the server in one terminal:
 
 ```bash
-cargo run --bin ein-server
+cargo run --bin eind
 ```
 
 Start the TUI client in another:
@@ -270,7 +270,7 @@ Tools are WASM components loaded at startup. Four are included out of the box:
 ```
 crates/
   ein-proto/    Protocol Buffer definitions (gRPC service + message types)
-  ein-server/   gRPC server — agent loop, WASM plugin host, session persistence
+  eind/         gRPC server — agent loop, WASM plugin host, session persistence
   ein-tui/      Terminal UI client
 packages/
   ein_tool/         WASM tool plugin interface (ToolPlugin trait, ToolDef, syscalls)
@@ -315,7 +315,7 @@ Sessions are persisted to `~/.ein/sessions.db`. Supplying a previously assigned 
 
 Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. The conversation pane renders a corgi pixel-art header on startup. Edit diffs are syntax-highlighted using `syntect` with the `base16-ocean.dark` theme.
 
-### Server modules (`crates/ein-server/src/`)
+### Server modules (`eind/src/`)
 
 | File | Role |
 |------|------|
@@ -329,7 +329,7 @@ Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. Th
 
 ## Releasing
 
-Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/). Only the `crates/ein` meta-package is distributed — it includes both the `ein-tui` and `ein-server` binaries.
+Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/). Only the `crates/ein` meta-package is distributed — it includes both the `ein-tui` and `eind` binaries.
 
 **1. Bump the version**
 

@@ -242,7 +242,7 @@ impl WasmTool {
 
         // Mount each allowed path at its absolute guest path so plugins can
         // open files by absolute path.  Additionally mount the first path as
-        // "." so that relative paths (e.g. "crates/ein-server/Cargo.toml")
+        // "." so that relative paths (e.g. "crates/eind/Cargo.toml")
         // resolve correctly — WASI resolves relative paths against the guest
         // current directory, which must be explicitly preopened.
         let mut first = true;

@@ -4,8 +4,8 @@
 use wasmtime::component::bindgen;
 
 bindgen!({
-    world: "model-client",
-    path: "../../wit/model_client",
+    world: "plugin",
+    path: "../wit/plugin",
     imports: { default: async },
     exports: { default: async }
 });

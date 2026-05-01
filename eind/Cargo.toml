@@ -1,5 +1,5 @@
 [package]
-name = "ein-server"
+name = "eind"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,11 +8,11 @@ repository.workspace = true
 homepage.workspace = true
 
 [lib]
-name = "ein_server"
+name = "eind"
 path = "src/lib.rs"
 
 [[bin]]
-name = "ein-server"
+name = "eind"
 path = "src/main.rs"
 
 
@@ -21,9 +21,9 @@ anyhow             = { workspace = true }
 async-trait        = "0.1"
 clap               = { version = "4.3.14", features = ["derive"] }
 dirs               = "6.0.0"
-ein-agent          = { path = "../ein-agent" }
-ein-proto          = { path = "../ein-proto" }
-ein_plugin         = { path = "../../packages/ein_plugin" }
+ein-agent          = { path = "../crates/ein-agent" }
+ein-proto          = { path = "../crates/ein-proto" }
+ein_plugin         = { path = "../packages/ein_plugin" }
 futures            = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

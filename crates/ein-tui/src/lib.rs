@@ -98,13 +98,13 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     info!(server_addr = %args.server_addr, "ein-tui starting");
 
-    // In release builds: download ein-server if absent, then register it as a
+    // In release builds: download eind if absent, then register it as a
     // system service. Runs before raw mode so stdout is visible for progress.
     #[cfg(not(debug_assertions))]
     {
         let bin = bootstrap::server_bin_path();
         if !bin.exists() {
-            println!("Downloading ein-server {}...", env!("CARGO_PKG_VERSION"));
+            println!("Downloading eind {}...", env!("CARGO_PKG_VERSION"));
             bootstrap::download_server(env!("CARGO_PKG_VERSION")).await?;
         }
         bootstrap::ensure_service_installed().await?;

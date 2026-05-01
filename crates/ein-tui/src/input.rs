@@ -6,8 +6,8 @@ use ein_proto::ein::{UserInput, agent_event::Event as ServerEvent, user_input};
 use tracing::{debug, info, warn};
 
 use crate::app::{
-    App, CwdState, DisplayMessage, Modal, SessionPickerState, SetupWizardState, UninstallModalState,
-    UninstallPhase, WizardStep,
+    App, CwdState, DisplayMessage, Modal, SessionPickerState, SetupWizardState,
+    UninstallModalState, UninstallPhase, WizardStep,
 };
 use crate::connection::to_proto_session_config;
 
@@ -59,7 +59,7 @@ pub(crate) const COMMANDS: &[CommandDef] = &[
     },
     CommandDef {
         name: "/uninstall",
-        description: "Stop and remove the ein-server service and binary",
+        description: "Stop and remove the eind service and binary",
     },
 ];
 

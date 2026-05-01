@@ -1,4 +1,4 @@
-# ein-server Code Review Report
+# eind Code Review Report
 
 _Evaluation Date: 2026-04-03_
 
@@ -6,7 +6,7 @@ _Evaluation Date: 2026-04-03_
 
 ## Executive Summary
 
-The `ein-server` (located in `crates/ein-server`) is a sophisticated gRPC server that implements a secure WASM-based agent hosting model. It successfully implements the core architecture of:
+The `eind` (located in `eind`) is a sophisticated gRPC server that implements a secure WASM-based agent hosting model. It successfully implements the core architecture of:
 - Loading and orchestrating WASM WASI plugins with **per-session isolation**
 - Fine-grained **access controls** (filesystem paths, network hosts)
 - Graceful **error handling** (preserving sessions after errors)
@@ -807,7 +807,7 @@ struct ModelClientCacheInner {
 
 ## Conclusion
 
-**The `ein-server` is a well-architected and innovative implementation** of a secure WASM-based agent hosting model. Its design prioritizes:
+**The `eind` is a well-architected and innovative implementation** of a secure WASM-based agent hosting model. Its design prioritizes:
 - ✅ Session isolation
 - ✅ Fine-grained access control
 - ✅ Graceful error handling

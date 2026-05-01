@@ -42,7 +42,7 @@ on:
   pull_request:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -218,7 +218,7 @@ jobs:
           name: artifacts-build-plugins
           path: ${{ env.ARCHIVE }}
 
-  # Build and package ein-server for each platform so bootstrap.rs can download it
+  # Build and package eind for each platform so bootstrap.rs can download it
   build-server-artifacts:
     name: build-server-artifacts (${{ matrix.target }})
     needs:
@@ -249,16 +249,16 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build ein-server
-        run: cargo build --release -p ein-server --target ${{ matrix.target }}
+      - name: Build eind
+        run: cargo build --release -p eind --target ${{ matrix.target }}
       - name: Package archive
         shell: bash
         run: |
           TARGET="${{ matrix.target }}"
-          ARCHIVE="ein-server-${TARGET}.tar.xz"
+          ARCHIVE="eind-${TARGET}.tar.xz"
           mkdir -p dist-server
-          cp "target/${TARGET}/release/ein-server" dist-server/
-          tar -cJf "${ARCHIVE}" -C dist-server ein-server
+          cp "target/${TARGET}/release/eind" dist-server/
+          tar -cJf "${ARCHIVE}" -C dist-server eind
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
       - name: Upload server archive artifact
         uses: actions/upload-artifact@v6

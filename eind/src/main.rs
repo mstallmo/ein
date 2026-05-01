@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Some(Commands::InstallPlugins { version }) => ein_server::install_plugins(version).await,
-        None => ein_server::run(args.port).await,
+        Some(Commands::InstallPlugins { version }) => eind::install_plugins(version).await,
+        None => eind::run(args.port).await,
     }
 }

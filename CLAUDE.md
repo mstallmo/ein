@@ -12,7 +12,7 @@ Ein is a Rust-based AI agent framework with a client-server architecture. A gRPC
 rustup target add wasm32-wasip2
 cargo build                          # Build all crates
 cargo build -p ein-tui               # Build just the TUI client
-cargo build -p ein-server            # Build just the server
+cargo build -p eind                  # Build just the server
 ```
 
 Plugins (tool plugins and model client plugins) are WASM components compiled separately:
@@ -42,7 +42,7 @@ Credentials are configured in `~/.ein/config.json` (created on first TUI launch)
 
 ```bash
 # Terminal 1 — start the server (no env vars needed)
-cargo run --bin ein-server
+cargo run --bin eind
 
 # Terminal 2 — start the TUI (connects to localhost:50051 by default)
 cargo run --bin ein-tui
@@ -59,7 +59,7 @@ The server creates `~/.ein/sessions.db` on first run to persist session history.
 
 ```
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
-│          ein-tui            │  gRPC    │          ein-server          │
+│          ein-tui            │  gRPC    │          eind                │
 │                             │ (proto)  │                              │
 │  Ratatui terminal UI        │◄────────►│  Agent loop + tool executor  │
 │  Keyboard / render loop     │          │  WASM plugin host            │
@@ -103,7 +103,7 @@ Sessions are persisted to a SQLite database at `~/.ein/sessions.db` (opened on s
 - **Save** — after each agent turn, the full message history is serialised and written (`save_messages`).
 - **Resume** — when a client supplies a known `session_id`, `load_messages` restores the conversation so the agent picks up where it left off.
 
-Database migrations live in `crates/ein-server/migrations/`.
+Database migrations live in `eind/migrations/`.
 
 ### Client config (`crates/ein-tui/src/config.rs`)
 
@@ -113,7 +113,7 @@ The TUI watches `~/.ein/config.json` for changes using `notify` (platform-native
 
 Legacy flat config files (with top-level `api_key`, `base_url`, `model`, `max_tokens`) are automatically migrated to the nested format on load.
 
-### Server (`crates/ein-server/`)
+### Server (`eind/`)
 
 | File | Role |
 |------|------|

@@ -3,7 +3,7 @@
 
 //! Ein server library.
 //!
-//! Exposes [`run`] so both the standalone `ein-server` binary and the `ein`
+//! Exposes [`run`] so both the standalone `eind` binary and the `ein`
 //! meta-package binary can share the same entry-point without duplicating code.
 
 mod grpc;
@@ -72,7 +72,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
     let server = AgentServer::new().await?;
 
-    println!("ein-server listening on {addr}");
+    println!("eind listening on {addr}");
 
     Server::builder()
         .add_service(AgentServiceServer::new(server))

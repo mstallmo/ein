@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-//! Bootstrap logic: downloads `ein-server` on first run and registers it as a
+//! Bootstrap logic: downloads `eind` on first run and registers it as a
 //! system service (macOS LaunchAgent or Linux systemd user service).
 
 // These items are only called from the #[cfg(not(debug_assertions))] block in
@@ -14,19 +14,19 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
-use xz2::read::XzDecoder;
 use tar::Archive;
 use tokio::{fs, process::Command, task};
+use xz2::read::XzDecoder;
 
 const GITHUB_REPO: &str = "mstallmo/ein";
 
-/// Path where `ein` installs the server binary: `~/.ein/bin/ein-server`.
+/// Path where `ein` installs the server binary: `~/.ein/bin/eind`.
 pub fn server_bin_path() -> PathBuf {
     dirs::home_dir()
         .expect("home directory not found")
         .join(".ein")
         .join("bin")
-        .join("ein-server")
+        .join("eind")
 }
 
 /// Compile-time target triple used to select the right GitHub release asset.
@@ -43,14 +43,14 @@ pub fn target_triple() -> &'static str {
     ""
 }
 
-/// Downloads the `ein-server` binary for the current platform from GitHub
-/// releases and writes it to `~/.ein/bin/ein-server` with executable permissions.
+/// Downloads the `eind` binary for the current platform from GitHub
+/// releases and writes it to `~/.ein/bin/eind` with executable permissions.
 pub async fn download_server(version: &str) -> Result<()> {
     let ver = version.trim_start_matches('v');
     let tag = format!("v{ver}");
     let triple = target_triple();
     // cargo-dist names archives as "{package}-{triple}.tar.xz" (no version in filename).
-    let archive_name = format!("ein-server-{triple}.tar.xz");
+    let archive_name = format!("eind-{triple}.tar.xz");
     let url = format!("https://github.com/{GITHUB_REPO}/releases/download/{tag}/{archive_name}");
 
     let dest = server_bin_path();
@@ -83,11 +83,11 @@ pub async fn download_server(version: &str) -> Result<()> {
     perms.set_mode(0o755);
     fs::set_permissions(&dest, perms).await?;
 
-    println!("ein-server installed to {}", dest.display());
+    println!("eind installed to {}", dest.display());
     Ok(())
 }
 
-/// Extracts the `ein-server` binary from a tar.xz archive into `dest`.
+/// Extracts the `eind` binary from a tar.xz archive into `dest`.
 fn extract_server(bytes: &[u8], dest: &Path) -> Result<()> {
     let xz = XzDecoder::new(io::Cursor::new(bytes));
     let mut archive = Archive::new(xz);
@@ -99,29 +99,29 @@ fn extract_server(bytes: &[u8], dest: &Path) -> Result<()> {
         let mut entry = entry.context("corrupt archive entry")?;
         let entry_path = entry.path().context("entry has no path")?;
 
-        // The archive contains exactly one file: the `ein-server` binary.
+        // The archive contains exactly one file: the `eind` binary.
         // Accept it regardless of any leading directory component.
         let file_name = entry_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
 
-        if file_name == "ein-server" {
+        if file_name == "eind" {
             let mut file = std::fs::File::create(dest)
                 .with_context(|| format!("failed to create {}", dest.display()))?;
-            io::copy(&mut entry, &mut file).context("failed to write ein-server")?;
+            io::copy(&mut entry, &mut file).context("failed to write eind")?;
             return Ok(());
         }
     }
 
-    anyhow::bail!("ein-server binary not found in archive")
+    anyhow::bail!("eind binary not found in archive")
 }
 
 // ---------------------------------------------------------------------------
 // Service registration
 // ---------------------------------------------------------------------------
 
-/// Ensures `ein-server` is registered as a system service.
+/// Ensures `eind` is registered as a system service.
 ///
 /// On macOS, installs a LaunchAgent plist and loads it.
 /// On Linux, writes a systemd user unit and enables it.
@@ -141,7 +141,7 @@ pub async fn ensure_service_installed() -> Result<()> {
 // Uninstall
 // ---------------------------------------------------------------------------
 
-/// Stops and removes the `ein-server` service and binary installed by
+/// Stops and removes the `eind` service and binary installed by
 /// [`ensure_service_installed`] and [`download_server`].
 ///
 /// Returns a list of completed step descriptions for display in the TUI.
@@ -216,7 +216,7 @@ async fn uninstall_systemd(steps: &mut Vec<String>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
-const LAUNCH_AGENT_LABEL: &str = "com.ein.server";
+const LAUNCH_AGENT_LABEL: &str = "com.ein.eind";
 
 #[cfg(target_os = "macos")]
 fn launchagent_plist_path() -> PathBuf {
@@ -292,7 +292,7 @@ async fn ensure_launchagent_installed() -> Result<()> {
         anyhow::bail!("launchctl load failed: {stderr}");
     }
 
-    println!("ein-server registered as LaunchAgent ({LAUNCH_AGENT_LABEL})");
+    println!("eind registered as LaunchAgent ({LAUNCH_AGENT_LABEL})");
     Ok(())
 }
 
@@ -301,7 +301,7 @@ async fn ensure_launchagent_installed() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-const SYSTEMD_SERVICE_NAME: &str = "ein-server";
+const SYSTEMD_SERVICE_NAME: &str = "eind";
 
 #[cfg(target_os = "linux")]
 fn systemd_unit_path() -> PathBuf {
@@ -363,6 +363,6 @@ async fn ensure_systemd_installed() -> Result<()> {
         anyhow::bail!("systemctl enable failed: {stderr}");
     }
 
-    println!("ein-server registered as systemd user service ({SYSTEMD_SERVICE_NAME})");
+    println!("eind registered as systemd user service ({SYSTEMD_SERVICE_NAME})");
     Ok(())
 }
