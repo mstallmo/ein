@@ -972,7 +972,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "ein-agent"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "ein-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "ein-proto"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "prost",
  "tonic",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "ein-server"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1032,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "ein-tui"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "ein_anthropic"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "ein_bash"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "ein_edit"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "ein_http"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "serde",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "ein_ollama"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "ein_openai"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "ein_openrouter"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "ein_plugin"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein-core",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "ein_read"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "ein_write"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "ein_plugin",
