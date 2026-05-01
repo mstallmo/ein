@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 anyhow      = { workspace = true }
-ein-core    = { path = "../../crates/ein-core" }
+ein-core    = { path = "../ein-core" }
 ein_http    = { path = "../ein_http" }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

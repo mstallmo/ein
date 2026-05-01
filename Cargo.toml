@@ -5,6 +5,8 @@ members = [
     "crates/ein-proto",
     "crates/ein-agent",
     "crates/ein-core",
+    "crates/ein_http",
+    "crates/ein_plugin",
     "packages/*",
 ]
 default-members = [
