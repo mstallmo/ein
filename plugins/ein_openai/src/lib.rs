@@ -71,6 +71,11 @@ fn default_base_url() -> String {
     "https://api.openai.com/v1".to_string()
 }
 
+/// WASM model client plugin for the OpenAI chat completions API.
+///
+/// Forwards requests verbatim in OpenAI format. Supports an optional
+/// `organization` field in config to send the `OpenAI-Organization` header.
+/// Compatible with any OpenAI-compatible endpoint via the `base_url` config.
 pub struct OpenAIPlugin {
     config: OpenAIConfig,
 }

@@ -20,6 +20,11 @@ struct ReadArgs {
     limit: usize,
 }
 
+/// WASM tool plugin that reads files from the filesystem.
+///
+/// Exposed to the model as the `Read` tool. Supports paginated reads via
+/// `offset` and `limit` parameters; a truncation header is prepended when not
+/// all lines are returned so the model knows to request more.
 #[derive(Debug, Clone)]
 pub struct ReadTool;
 

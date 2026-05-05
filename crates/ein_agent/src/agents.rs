@@ -40,24 +40,37 @@ pub type AgentResult<T> = Result<T, AgentError>;
 pub type ToolResult<T> = Result<T, ToolError>;
 pub type AgentEventHandler = Arc<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + Send + Sync>;
 
+/// An event emitted by the agent loop during a single chat turn.
+///
+/// Consumers receive these via the handler registered with
+/// [`AgentBuilder::with_event_handler`]. The server translates them into
+/// `AgentEvent` proto messages and streams them to the connected TUI client.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// A text chunk from the model's response as it streams in.
     ContentDelta(String),
+    /// Cumulative token counts reported by the model after a completion call.
     TokenUsage {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
     },
+    /// The model has requested a tool call; execution is about to begin.
     ToolCallStart {
         tool_call_id: String,
         tool_name: String,
         arguments: String,
+        /// The value of the tool's declared `primary_arg` parameter, if any,
+        /// extracted from `arguments` for display in the client UI.
         display_arg: Option<String>,
     },
+    /// A streaming output chunk produced by a tool mid-execution (e.g. a Bash
+    /// stdout line). Only emitted for tools that enable chunk sending.
     ToolOutputChunk {
         tool_call_id: String,
         output: String,
     },
+    /// A tool call has completed; includes its full result and any metadata.
     ToolCallEnd {
         tool_call_id: String,
         tool_name: String,
@@ -66,6 +79,9 @@ pub enum AgentEvent {
     },
 }
 
+/// Builder for constructing an [`Agent`].
+///
+/// Obtained via [`Agent::builder`] or [`Agent::builder_with_tool_set`].
 pub struct AgentBuilder<MC: ModelClient, TS: ToolSet> {
     num_recent_messages: usize,
     max_tool_result_chars: usize,

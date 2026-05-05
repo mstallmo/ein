@@ -73,16 +73,31 @@ macro_rules! export_tool {
 
 pub use ein_core::types::{ToolDef, ToolResult};
 
+/// Extension of [`ToolPlugin`] that can be zero-argument constructed.
+///
+/// The WIT glue calls `new` when a session loads the plugin. Tool plugins do
+/// not receive config JSON; per-session configuration flows through the WASI
+/// context (preopened paths, allowed hosts) rather than constructor arguments.
 pub trait ConstructableToolPlugin: ToolPlugin {
     fn new() -> Self;
 }
 
-// WASM plugin for Ein implementation detail
+/// Core trait implemented by every tool WASM plugin.
+///
+/// The server calls [`name`](Self::name) and [`schema`](Self::schema) once
+/// after loading to register the tool with the LLM. For each model tool call,
+/// it invokes [`call`](Self::call) with the call ID and JSON-encoded arguments.
 pub trait ToolPlugin: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolDef;
     fn call(&self, id: &str, args: &str) -> anyhow::Result<ToolResult>;
 
+    /// Whether this plugin wants a chunk sender for streaming output.
+    ///
+    /// When `true`, the server wires up a `ToolOutputChunk` event channel
+    /// before calling [`call`](Self::call), allowing the plugin to stream
+    /// incremental output (e.g. Bash stdout lines) back to the client in real
+    /// time rather than waiting for the call to complete.
     fn enable_chunk_sender(&self) -> bool {
         false
     }

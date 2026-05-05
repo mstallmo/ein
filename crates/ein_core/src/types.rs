@@ -6,6 +6,10 @@ use std::collections;
 // Model Completion Requests
 // -------------------------------
 
+/// A request sent to a model client plugin to produce a chat completion.
+///
+/// Field names and JSON representation match the OpenAI chat completions wire
+/// format so that OpenAI-compatible plugins can forward this struct verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
@@ -17,6 +21,7 @@ pub struct CompletionRequest {
     pub max_tokens: i32,
 }
 
+/// The response returned by a model client plugin after a completion call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletionResponse {
     #[serde(default)]
@@ -30,6 +35,7 @@ pub struct CompletionResponse {
     pub error: Option<serde_json::Value>,
 }
 
+/// A single completion candidate returned by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Choice {
     pub index: Option<usize>,
@@ -37,15 +43,24 @@ pub struct Choice {
     pub message: Message,
 }
 
+/// Why the model stopped generating tokens.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
+    /// The model reached a natural stopping point.
     Stop,
+    /// The model requested one or more tool calls.
     ToolCalls,
+    /// Any finish reason not explicitly handled (e.g. `"length"`).
     #[serde(other)]
     Unsupported,
 }
 
+/// A single message in the conversation history.
+///
+/// Serialises to the OpenAI chat-completions message format. `None` fields are
+/// omitted from the JSON so the struct can be forwarded verbatim to
+/// OpenAI-compatible endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
@@ -57,15 +72,18 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+/// The role of a [`Message`] in the conversation.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     System,
     User,
     Assistant,
+    /// Used for tool result messages fed back to the model.
     Tool,
 }
 
+/// A tool invocation requested by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
@@ -80,6 +98,7 @@ pub enum ToolCall {
     },
 }
 
+/// The name and arguments of a function-type tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
@@ -87,6 +106,7 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
+/// Token consumption reported by the model for a single completion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
@@ -98,6 +118,11 @@ pub struct Usage {
 // Tools
 // -------------------------------
 
+/// A tool definition sent to the model so it knows which tools are available.
+///
+/// Serialises to the OpenAI function-calling schema (`{"type": "function", …}`).
+/// Use [`ToolDef::function`] or the builder returned by that method to
+/// construct instances rather than building the nested struct tree by hand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
@@ -121,6 +146,11 @@ struct ParamDef {
     required: bool,
 }
 
+/// Builder for constructing a [`ToolDef::Function`] with typed parameters.
+///
+/// Obtain one via [`ToolDef::function`], chain [`param`](Self::param) calls to
+/// add parameters, then call [`build`](Self::build) to produce the final
+/// [`ToolDef`].
 pub struct ToolFunctionBuilder {
     name: String,
     description: String,
@@ -128,6 +158,7 @@ pub struct ToolFunctionBuilder {
 }
 
 impl ToolFunctionBuilder {
+    /// Creates a new builder with the given tool name and description.
     pub fn new(name: String, description: String) -> Self {
         Self {
             name,
@@ -136,6 +167,10 @@ impl ToolFunctionBuilder {
         }
     }
 
+    /// Adds a parameter to the tool schema.
+    ///
+    /// Set `required` to `true` to include the parameter in the JSON Schema
+    /// `required` array, which instructs the model that it must supply a value.
     pub fn param(
         mut self,
         name: impl Into<String>,
@@ -152,6 +187,7 @@ impl ToolFunctionBuilder {
         self
     }
 
+    /// Consumes the builder and returns a fully constructed [`ToolDef`].
     pub fn build(self) -> ToolDef {
         let mut props = ToolFuncProps::new();
         let mut required_props = Vec::new();
@@ -184,6 +220,7 @@ impl ToolFunctionBuilder {
     }
 }
 
+/// The function metadata within a [`ToolDef::Function`] variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolFunction {
     pub name: String,
@@ -191,6 +228,10 @@ pub struct ToolFunction {
     pub parameters: ToolFunctionParams,
 }
 
+/// The JSON Schema describing a tool function's accepted parameters.
+///
+/// Currently only the `"object"` type is supported, which is the format
+/// required by the OpenAI function-calling API.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
@@ -201,6 +242,7 @@ pub enum ToolFunctionParams {
     },
 }
 
+/// A map of parameter names to their JSON Schema property descriptors.
 #[derive(Debug, Default, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ToolFuncProps(collections::HashMap<String, ToolFuncPropInfo>);
 
@@ -218,6 +260,7 @@ impl ToolFuncProps {
     }
 }
 
+/// JSON Schema type and description for a single tool parameter.
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct ToolFuncPropInfo {
     #[serde(rename = "type")]
@@ -234,6 +277,10 @@ impl ToolFuncPropInfo {
     }
 }
 
+/// The output produced by executing a tool call.
+///
+/// Returned by tool implementations and appended to the conversation history
+/// as a `role: "tool"` message so the model can see the result.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolResult {
     tool_call_id: String,

@@ -46,6 +46,10 @@ fn default_base_url() -> String {
     "https://api.anthropic.com".to_string()
 }
 
+/// WASM model client plugin for the Anthropic Messages API.
+///
+/// Translates between Ein's internal OpenAI-compatible format and the
+/// Anthropic wire format. See the module-level comment for the full mapping.
 pub struct AnthropicPlugin {
     config: AnthropicConfig,
 }

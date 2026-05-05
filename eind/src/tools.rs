@@ -21,6 +21,12 @@ use std::{
 
 use bindings::Plugin;
 
+/// Shared factory for creating per-session WASM tool sets.
+///
+/// Holds the compiled Wasmtime engine and a pre-built linker so that
+/// per-session [`WasmToolSet`]s can be created cheaply without re-linking.
+/// The underlying engine and linker are reference-counted and cloned into
+/// each session task.
 #[derive(Clone)]
 pub struct ToolSetManager {
     engine: Engine,
@@ -29,6 +35,7 @@ pub struct ToolSetManager {
 }
 
 impl ToolSetManager {
+    /// Creates a new `ToolSetManager`, building the tool plugin linker.
     pub async fn new<P: AsRef<Path>>(tool_dir: P, engine: Engine) -> anyhow::Result<Self> {
         let linker = Arc::new(build_tool_linker(&engine)?);
 
@@ -39,6 +46,8 @@ impl ToolSetManager {
         })
     }
 
+    /// Loads and instantiates all `.wasm` tool plugins from `tool_dir`,
+    /// returning a [`WasmToolSet`] configured for the given session.
     pub async fn new_tool_set(
         &self,
         session_cfg: &ein_proto::ein::SessionConfig,
@@ -82,6 +91,11 @@ impl WasiView for ToolState {
     }
 }
 
+/// A per-session collection of instantiated WASM tool plugins.
+///
+/// Each plugin lives in its own Wasmtime `Store` with an isolated WASI context
+/// (preopened paths, allowed hosts). The set implements [`ToolSet`] so it can
+/// be passed directly to the agent loop.
 pub struct WasmToolSet(collections::HashMap<String, WasmTool>);
 
 impl WasmToolSet {
@@ -220,6 +234,7 @@ pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
     result
 }
 
+/// A single instantiated WASM tool plugin with its own Wasmtime store.
 pub struct WasmTool {
     name: String,
     schema: ToolDef,

@@ -5,6 +5,11 @@ use anyhow::anyhow;
 use ein_plugin::tool::{ConstructableToolPlugin, ToolDef, ToolPlugin, ToolResult};
 use serde::Deserialize;
 
+/// WASM tool plugin that executes shell commands via the `spawn` host syscall.
+///
+/// Exposed to the model as the `Bash` tool with a single required `command`
+/// parameter. Streaming is enabled so stdout lines are forwarded as
+/// `ToolOutputChunk` events while the command runs.
 #[derive(Debug, Clone)]
 pub struct BashTool {
     name: String,

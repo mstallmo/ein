@@ -559,6 +559,10 @@ impl AgentService for AgentServer {
     }
 }
 
+/// Thin wrapper around the gRPC response sender for a session stream.
+///
+/// Wraps the `mpsc::Sender` in a convenience API so callers don't have to
+/// construct `AgentEventProto` by hand or swallow send errors manually.
 #[derive(Clone)]
 struct AgentEventSender(mpsc::Sender<Result<AgentEventProto, Status>>);
 
@@ -567,6 +571,7 @@ impl AgentEventSender {
         Self(tx)
     }
 
+    /// Sends a successful `AgentEvent` proto to the client stream.
     pub async fn send_event(&self, event: agent_event::Event) {
         let _ = self
             .0
@@ -574,6 +579,7 @@ impl AgentEventSender {
             .await;
     }
 
+    /// Sends a gRPC `Status` error to the client stream.
     pub async fn send_error(&self, status: Status) {
         let _ = self.0.send(Err(status)).await;
     }

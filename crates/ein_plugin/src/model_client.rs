@@ -53,10 +53,22 @@ pub use ein_core::types::{
 };
 pub use ein_http::{HttpRequest, HttpResponse, RequestDeniedError};
 
+/// Extension of [`ModelClientPlugin`] that can be constructed from config JSON.
+///
+/// The WIT glue calls `new` with the plugin's `config_json` string (the
+/// `params_json` field from `SessionConfig.plugin_configs`) when a new session
+/// starts. Implement this trait alongside [`ModelClientPlugin`] for every model
+/// client plugin.
 pub trait ConstructableModelClientPlugin: ModelClientPlugin {
     fn new(config_json: &str) -> Self;
 }
 
+/// Core trait implemented by every model client WASM plugin.
+///
+/// The server calls `complete` with a serialised [`CompletionRequest`] and
+/// expects a serialised [`CompletionResponse`] in return. The plugin is
+/// responsible for translating between Ein's internal format and whatever
+/// wire protocol the upstream API uses (e.g. Anthropic Messages, OpenAI).
 pub trait ModelClientPlugin: Send + Sync {
     fn complete(&self, request_json: &str) -> anyhow::Result<String>;
 }

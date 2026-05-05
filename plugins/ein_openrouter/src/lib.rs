@@ -66,6 +66,11 @@ fn default_base_url() -> String {
     "https://openrouter.ai/api/v1".to_string()
 }
 
+/// WASM model client plugin for the OpenRouter API.
+///
+/// Forwards requests verbatim in OpenAI chat-completions format (no
+/// translation required) and validates that the response parses as a
+/// [`CompletionResponse`] before returning it.
 pub struct OpenRouterPlugin {
     config: OpenRouterConfig,
 }

@@ -2,10 +2,10 @@
 // Copyright 2026 Mason Stallmo
 
 use anyhow::{Context, Result};
-use xz2::read::XzDecoder;
 use std::{io, path::Path};
 use tar::Archive;
 use tokio::{fs, task};
+use xz2::read::XzDecoder;
 
 const DEFAULT_TOOL_PLUGINS: &[&str] = &["ein_bash", "ein_read", "ein_write", "ein_edit"];
 const DEFAULT_MODEL_CLIENT_PLUGINS: &[&str] = &[
@@ -15,6 +15,10 @@ const DEFAULT_MODEL_CLIENT_PLUGINS: &[&str] = &[
     "ein_ollama",
 ];
 
+/// Downloads and installs the Ein plugin bundle from GitHub releases.
+///
+/// If `version` is `None`, installs the version matching the current binary's
+/// `CARGO_PKG_VERSION`. Plugins are extracted to `~/.ein/plugins/`.
 pub async fn install_plugins(version: Option<String>) -> Result<()> {
     let ver = version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let ver = ver.trim_start_matches('v');

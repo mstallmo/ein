@@ -26,6 +26,11 @@ use wasmtime_wasi_http::{
 
 use bindings::{ModelClient as ModelClientPlugin, ModelClientPre};
 
+/// Shared factory for creating per-session WASM model client instances.
+///
+/// Compiled plugins are cached by name in a [`ModelClientCache`] so that
+/// repeated session creation for the same plugin incurs only the cheap
+/// per-session instantiation cost, not a full WASM compilation.
 #[derive(Clone)]
 pub struct ModelClientSessionManager {
     engine: Engine,
@@ -35,6 +40,8 @@ pub struct ModelClientSessionManager {
 }
 
 impl ModelClientSessionManager {
+    /// Creates a new manager, building the model client linker and scanning
+    /// `model_client_dir` to determine the fallback plugin name.
     pub async fn new<P: AsRef<Path>>(model_client_dir: P, engine: Engine) -> anyhow::Result<Self> {
         let model_client_dir = model_client_dir.as_ref();
         let linker = Arc::new(build_model_client_linker(&engine)?);
@@ -55,6 +62,12 @@ impl ModelClientSessionManager {
         })
     }
 
+    /// Instantiates a model client for a new session from the given config.
+    ///
+    /// Selects the plugin named by `session_cfg.model_client_name`, falling
+    /// back to the first available plugin if the name is empty. Compiles and
+    /// links the plugin on first use; subsequent calls for the same plugin name
+    /// reuse the cached compiled component.
     pub async fn new_session(
         &self,
         session_cfg: &ein_proto::ein::SessionConfig,
@@ -173,6 +186,10 @@ fn derive_allowed_hosts(base_url: &str) -> Vec<String> {
     }
 }
 
+/// A ready-to-use model client for a single session.
+///
+/// Pairs the session's LLM parameters (model name, max tokens) with the
+/// instantiated WASM plugin that makes the actual HTTP calls.
 pub struct ModelClientSession {
     params: SessionParams,
     client: WasmModelClient,
@@ -270,6 +287,11 @@ impl wasmtime_wasi_http::WasiHttpView for ModelClientState {
     }
 }
 
+/// A live model client WASM plugin instance with its Wasmtime store.
+///
+/// Each session owns one `WasmModelClient`. The store holds the plugin's WASI
+/// context including the outbound HTTP allowlist enforced by
+/// [`ModelClientState::send_request`].
 pub struct WasmModelClient {
     store: Store<ModelClientState>,
     bindings: ModelClientPlugin,

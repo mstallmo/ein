@@ -90,6 +90,11 @@ fn map_http_error(status: u16, body: &str, model: &str) -> Option<anyhow::Error>
     }
 }
 
+/// WASM model client plugin for a local Ollama instance.
+///
+/// Calls Ollama's OpenAI-compatible `/v1/chat/completions` endpoint. Supports
+/// optional bearer auth and the `num_ctx` option for enlarging the context
+/// window beyond Ollama's default 2048-token limit.
 pub struct OllamaPlugin {
     config: OllamaConfig,
 }

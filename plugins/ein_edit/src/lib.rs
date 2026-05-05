@@ -13,6 +13,12 @@ struct EditArgs {
     new_string: String,
 }
 
+/// WASM tool plugin that performs exact-string replacements in files.
+///
+/// Exposed to the model as the `Edit` tool. Replaces the first occurrence of
+/// `old_string` with `new_string` and returns `metadata` containing
+/// `start_line`, `old_lines`, and `new_lines` so the TUI can render a
+/// syntax-highlighted diff without re-reading the file.
 #[derive(Debug, Clone)]
 pub struct EditTool;
 

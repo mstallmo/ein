@@ -11,6 +11,12 @@ struct WriteArgs {
     content: String,
 }
 
+/// WASM tool plugin that writes content to a file.
+///
+/// Exposed to the model as the `Write` tool. Creates the target file and any
+/// missing parent directories automatically, then truncates and writes the
+/// full `content` string. Suitable for creating new files or completely
+/// replacing an existing file's contents.
 #[derive(Debug, Clone)]
 pub struct WriteTool;
 

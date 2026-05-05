@@ -14,6 +14,7 @@ use crate::tools::{Tool, ToolSet};
 pub struct NativeToolSet(collections::HashMap<String, Box<dyn Tool>>);
 
 impl NativeToolSet {
+    /// Registers a tool with the set, replacing any existing tool of the same name.
     pub fn insert(&mut self, tool: impl Tool + 'static) {
         self.0.insert(tool.name().to_string(), Box::new(tool));
     }
