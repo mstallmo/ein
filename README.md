@@ -1,6 +1,9 @@
+<img src="https://tangled.org/mstallmo.com/ein/raw/main/assets/corgi.svg" width="128" alt="Ein corgi logo" />
+
 # Ein
 
-Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop and executes tools implemented as pluggable WASM modules. Multiple model backends are supported (OpenRouter, Anthropic, OpenAI, Ollama). A terminal UI client connects to the server and provides an interactive chat interface. Sessions are persisted to SQLite so conversations can be resumed across reconnects.
+An AI agent for your terminal — self-hosted, plugin-driven, and yours.
+
 
 ```
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
@@ -14,60 +17,67 @@ Ein is a Rust-based AI agent framework. A gRPC server drives an LLM agent loop a
 └─────────────────────────────┘          └──────────────────────────────┘
 ```
 
+`ein` is the terminal UI you interact with; `eind` is the agent server that runs as a background service. On first launch, `ein` downloads `eind` automatically and registers it as a system service — no separate server setup required. Tools and model clients are sandboxed WASM plugins: choose from OpenRouter, Anthropic, OpenAI, or Ollama, or write your own.
+
+## Features
+
+- Works with OpenRouter, Anthropic, OpenAI, and Ollama — bring your own key or run locally with no API key
+- Sessions persist to SQLite; resume any conversation where you left off
+- Tools run as sandboxed WASM components with fine-grained filesystem and network controls per session
+- Extend with custom tools or model client backends
+- Syntax-highlighted edit diffs shown inline as the agent works
+- Live config reload — update credentials without restarting
+
 ## Installation
 
-Install pre-built binaries with [cargo binstall](https://github.com/cargo-bins/cargo-binstall):
+Install with [cargo binstall](https://github.com/cargo-bins/cargo-binstall):
 
 ```bash
 cargo install cargo-binstall
 cargo binstall --git https://github.com/mstallmo/ein ein
 ```
 
-This installs both `ein` (terminal UI) and `eind` (gRPC agent server). You can also install them individually:
-
-```bash
-cargo binstall --git https://github.com/mstallmo/ein ein
-cargo binstall --git https://github.com/mstallmo/ein eind
-```
-
-Or download archives directly from [GitHub Releases](https://github.com/mstallmo/ein/releases).
-
-> **Note:** WASM plugins are required for the server to function and are not included in
-> binary releases. After installing, build and install plugins from source:
-> ```bash
-> git clone https://github.com/mstallmo/ein && cd ein
-> rustup target add wasm32-wasip2
-> ./scripts/build_install_plugins.sh
-> ```
+Or download pre-built archives directly from [GitHub Releases](https://github.com/mstallmo/ein/releases).
 
 ## Getting Started
 
-### Prerequisites
+Run `ein`. On first launch:
 
-- API credentials for your chosen model backend (e.g. [OpenRouter](https://openrouter.ai/settings/keys), Anthropic, OpenAI) or a running [Ollama](https://ollama.com) instance
-- Install Rust
+1. **Server setup** — `eind` is downloaded from GitHub Releases and registered as a background service automatically
+2. **Setup wizard** — choose your model provider and enter your API credentials
+3. **Session picker** — create a new session or resume an existing one; when starting a new session, a prompt asks whether to grant the agent access to your current working directory for that session
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+That's it. `ein` manages `eind` — you never need to run the server separately.
+
+## Configuration
+
+The TUI stores configuration at `~/.ein/config.json`, created on first run. You can also open it at any time with `/config`.
+
+```json
+{
+  "allowed_paths": [],
+  "allowed_hosts": [],
+  "plugin_configs": {
+    "ein_openrouter": {
+      "config": {
+        "api_key": "sk-or-...",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "anthropic/claude-haiku-4.5",
+        "max_tokens": "2500"
+      }
+    }
+  }
+}
 ```
 
-### Setup
+### Global fields
 
-**Add the WASM compile target**
-```bash
-rustup target add wasm32-wasip2
-```
+| Field | Description |
+|-------|-------------|
+| `allowed_paths` | Filesystem paths all WASM plugins may read/write (preopened for every session) |
+| `allowed_hosts` | Hostnames all WASM plugins may connect to (empty = deny all; `"*"` = allow all) |
 
-**Build the WASM plugins** (tool plugins and model client plugins)
-```bash
-./scripts/build_install_plugins.sh
-```
-
-> In debug builds, plugins are loaded automatically from `./target/wasm32-wasip2/debug/` — no installation needed. In release builds, tool plugins are installed to `~/.ein/plugins/tools/` and model client plugins to `~/.ein/plugins/model_clients/`.
-
-### Configure credentials
-
-Add your model backend credentials to `~/.ein/config.json` (created automatically on first TUI launch). Examples for each supported backend:
+### Credentials by provider
 
 **OpenRouter**
 ```json
@@ -123,113 +133,26 @@ Add your model backend credentials to `~/.ein/config.json` (created automaticall
 }
 ```
 
-### Running
-
-Start the server in one terminal:
-
-```bash
-cargo run --bin eind
-```
-
-Start the TUI client in another:
-
-```bash
-cargo run --bin ein
-```
-
-The TUI connects to `localhost:50051` by default. To connect to a different address:
-
-```bash
-cargo run --bin ein -- http://my-server:50051
-```
-
-To enable debug logging to `~/.ein/tui.log`:
-
-```bash
-cargo run --bin ein -- --debug
-```
-
-On first connection a **session picker** modal appears. Use `↑`/`↓` to navigate, `Enter` to select:
-- **New Session** — starts a fresh conversation; a follow-up modal asks whether to grant the agent access to your current working directory for that session
-- **Existing session** — resumes a prior conversation from where it left off
-- **Shift+D** on an existing session — permanently deletes it from the server
-
-## Configuration
-
-The TUI stores its configuration at `~/.ein/config.json`. The file is created with defaults on first run.
-
-```json
-{
-  "allowed_paths": [],
-  "allowed_hosts": [],
-  "plugin_configs": {
-    "ein_openrouter": {
-      "config": {
-        "api_key": "sk-or-...",
-        "base_url": "https://openrouter.ai/api/v1",
-        "model": "anthropic/claude-haiku-4.5",
-        "max_tokens": "2500"
-      }
-    }
-  }
-}
-```
-
-### Global fields
-
-| Field | Description |
-|-------|-------------|
-| `allowed_paths` | Filesystem paths all WASM plugins may read/write (preopened for every session) |
-| `allowed_hosts` | Hostnames all WASM plugins may connect to (empty = deny all; `"*"` = allow all) |
-
-When starting a new session, the TUI asks whether to add the current working directory to `allowed_paths` for that session only — this is never written back to `config.json`.
-
-### Per-plugin configuration (`plugin_configs`)
-
-`plugin_configs` is a map keyed by plugin filename stem (e.g. `"ein_openrouter"`, `"ein_bash"`). Each entry can contain:
-
-| Field | Description |
-|-------|-------------|
-| `allowed_paths` | Additional filesystem paths for this plugin only, merged with the global list |
-| `allowed_hosts` | Additional hostnames for this plugin only, merged with the global list |
-| `config` | Arbitrary key-value pairs forwarded to the plugin at instantiation |
-
-Known `config` keys per plugin:
-
-| Plugin | Key | Description |
-|--------|-----|-------------|
-| `ein_openrouter` | `api_key` | OpenRouter API key |
-| `ein_openrouter` | `base_url` | API endpoint; restricts outbound connections to that host |
-| `ein_openrouter` | `model` | OpenRouter model ID (e.g. `anthropic/claude-haiku-4.5`) |
-| `ein_openrouter` | `max_tokens` | Maximum tokens per LLM response |
-| `ein_anthropic` | `api_key` | Anthropic API key |
-| `ein_anthropic` | `model` | Anthropic model ID (e.g. `claude-haiku-4-5`) |
-| `ein_anthropic` | `max_tokens` | Maximum tokens per LLM response |
-| `ein_openai` | `api_key` | OpenAI API key |
-| `ein_openai` | `base_url` | API endpoint (defaults to OpenAI; set for compatible providers) |
-| `ein_openai` | `model` | Model ID (e.g. `gpt-4o`) |
-| `ein_openai` | `max_tokens` | Maximum tokens per LLM response |
-| `ein_ollama` | `base_url` | Ollama server URL (e.g. `http://localhost:11434`) |
-| `ein_ollama` | `model` | Model name (e.g. `llama3`) |
-| `ein_ollama` | `max_tokens` | Maximum tokens per LLM response |
-
-Changes to `config.json` are picked up automatically while the TUI is running — plugin config updates take effect without restarting.
+Changes to `config.json` are picked up automatically while the TUI is running.
 
 ## Usage
 
-Type a message and press **Enter** to send it to the agent. Type `/` to see available slash commands with autocomplete hints.
+Type a message and press **Enter** to send. Type `/` to see available slash commands with autocomplete hints.
 
 | Key / Command | Action |
 |---------------|--------|
 | `Enter` | Send message / run slash command |
-| `↑` / `↓` | Scroll conversation history (also navigate session picker) |
+| `↑` / `↓` | Scroll conversation history |
 | `Ctrl-C` | Force quit |
 | `/exit` | Exit the TUI |
 | `/config` | Open `~/.ein/config.json` in `$EDITOR` |
-| `/clear` | Wipe the agent's in-memory context (SQLite history preserved; clears display) |
+| `/clear` | Wipe the agent's in-memory context (SQLite history preserved) |
 | `/new` | Drop current session and start a fresh one |
 | `/sessions` | Re-open the session picker to switch sessions |
 | `/compact` | Summarise the conversation via the LLM and replace history with the summary |
+| `/plugins` | Manage installed plugins |
+| `/setup` | Re-run the first-time setup wizard |
+| `/uninstall` | Stop and remove the eind service and binary |
 
 While the agent is working, an animated thinking spinner appears in the conversation pane. Tool invocations are shown inline as the agent uses them:
 
@@ -240,17 +163,17 @@ While the agent is working, an animated thinking spinner appears in the conversa
  ▸ Edit  src/main.rs
 ```
 
-`Edit` calls display a syntax-highlighted diff showing the removed and added lines (up to 5 each), with line numbers.
+`Edit` calls display a syntax-highlighted diff showing removed and added lines (up to 5 each), with line numbers.
 
-The status bar at the bottom shows the active model and cumulative token usage on the left, and the current session UUID on the right.
+The status bar shows the active model and cumulative token usage. Use `Shift+D` on a session in the picker to permanently delete it.
 
 ### Connection behaviour
 
-The TUI connects in the background immediately on startup. The session picker modal is shown as part of the first successful connection handshake. While disconnected, a red `●` icon and animated spinner appear in the conversation pane. The TUI reconnects automatically every 3 seconds. If the server goes away mid-session, an error message is shown and the TUI resumes connecting in the background — the session picker reappears on the next successful reconnect. Running `/new` or `/sessions` bypasses the 3-second retry delay and triggers an immediate reconnect.
+The TUI reconnects automatically every 3 seconds if the server is unavailable. Running `/new` or `/sessions` bypasses the retry delay and triggers an immediate reconnect attempt.
 
 ## Tools
 
-Tools are WASM components loaded at startup. Four are included out of the box:
+Tools are WASM components loaded at startup. Four are included:
 
 | Tool | Description |
 |------|-------------|
@@ -289,68 +212,15 @@ plugins/
 
 ### Protocol
 
-The protocol (`crates/ein_proto/proto/ein.proto`) defines a bidirectional streaming RPC (`AgentSession`), a unary `ListSessions` RPC, and a unary `DeleteSession` RPC. Each session opens with a `SessionConfig` message (global sandbox constraints + per-plugin config map + optional `session_id` for resume), followed by `UserInput` prompt messages. The server streams back `AgentEvent` messages as the agent thinks, calls tools, and produces output — starting with a `SessionStarted` event carrying the session's UUID, a `resumed` boolean, and the prior conversation history when resuming.
-
-`UserInput` variants after `init`:
-- `prompt` — a user message driving `run_agent`
-- `config_update` — push new plugin credentials to the live session without reconnecting
-- `clear_context` — wipe the server's in-memory message history (SQLite history preserved)
-- `compact_context` — summarise the conversation via the LLM; replaces both in-memory and persisted history with the summary
-
-`ListSessions` returns a list of `SessionSummary` records (newest-first), each containing the session ID, creation timestamp, a preview of the first user message, and the stored `SessionConfig` JSON needed to reconstruct the session on resume. `DeleteSession` permanently removes a session and its message history from the store.
+The protocol (`crates/ein_proto/proto/ein.proto`) defines a bidirectional streaming `AgentSession` RPC, a `ListSessions` RPC, and a `DeleteSession` RPC. Each session opens with a `SessionConfig` init message followed by user prompts; the server streams back `AgentEvent` messages starting with a `SessionStarted` event that carries the session UUID and a `resumed` boolean.
 
 ### Session persistence
 
-Sessions are persisted to `~/.ein/sessions.db`. Supplying a previously assigned `session_id` in `SessionConfig` causes the server to restore the full conversation history and resume as if the session never disconnected.
+Sessions are persisted to `~/.ein/sessions.db`. Supplying a previously assigned `session_id` in `SessionConfig` restores the full conversation history so the agent picks up exactly where it left off.
 
-### TUI modules (`ein/src/`)
+## Contributing
 
-| File | Role |
-|------|------|
-| `main.rs` | Entry point, CLI args, event loop, terminal lifecycle |
-| `app.rs` | `App` state struct, `DisplayMessage` variants, session picker / CWD modal state |
-| `config.rs` | `ClientConfig` — load, save, and migrate `~/.ein/config.json` |
-| `connection.rs` | `connection_manager` — background reconnect loop, `ListSessions` handshake, `DeleteSession`, config file watcher |
-| `input.rs` | Slash command registry (`COMMANDS`), key event handler, server event handler |
-| `render.rs` | Full render pass — conversation pane, input area, autocomplete, session picker and CWD modals, status bar |
-
-Uses **Ratatui** (v0.29) for rendering and **crossterm** for keyboard events. The conversation pane renders a corgi pixel-art header on startup. Edit diffs are syntax-highlighted using `syntect` with the `base16-ocean.dark` theme.
-
-### Server modules (`eind/src/`)
-
-| File | Role |
-|------|------|
-| `main.rs` | CLI arg parsing, `EinConfig`, `HarnessState`, `ModelClientHarnessState` (HTTP host filtering), server startup |
-| `grpc.rs` | `AgentServer` — tonic `Agent` impl; `AgentSession` and `ListSessions` handlers; session persistence; `ConfigUpdate` mid-session |
-| `agent.rs` | `run_agent` — the LLM ↔ tool loop |
-| `model_client.rs` | `ModelClientSessionManager`, WASM model client compilation and instantiation |
-| `persistence.rs` | `SessionStore` — SQLite-backed session storage; create, save, and load message history |
-| `tools.rs` | `ToolRegistry` + `WasmTool` — loads and calls WASM plugins |
-| `syscalls.rs` | Host functions exposed to WASM tool plugins (spawn, log, …) |
-
-## Releasing
-
-Releases are fully automated via CI using [cargo-dist](https://axodotdev.github.io/cargo-dist/).
-
-**1. Bump the version**
-
-Edit `version` in `[workspace.package]` in `Cargo.toml`. All crates inherit this value.
-
-**2. Commit and tag**
-
-```bash
-git commit -am "chore: bump version to vX.Y.Z"
-git tag vX.Y.Z
-git push origin main --tags
-```
-
-**3. CI publishes the release**
-
-Pushing a tag matching `vX.Y.Z` triggers `.github/workflows/release.yml`, which builds multi-platform binaries (macOS arm64/x86, Linux arm64/x86, Windows x86) and publishes a GitHub Release with archives and checksums.
-
-Once the release is live, `cargo binstall --git https://github.com/mstallmo/ein ein` will resolve the new binaries automatically — no crates.io publish required.
-
-> **Note:** `release.yml` contains a manually-added `protoc` install step. If you ever regenerate the workflow with `cargo dist generate`, preserve that step — it is required for the proto compilation during the build.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build from source, run in development, and cut a release.
 
 ## License
 
