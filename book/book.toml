@@ -1,0 +1,11 @@
+[book]
+title = "Ein"
+authors = ["Mason Stallmo"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/mstallmo/ein"
+edit-url-template = "https://github.com/mstallmo/ein/edit/main/book/{path}"
