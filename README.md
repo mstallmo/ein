@@ -1,8 +1,12 @@
-<img src="assets/corgi.png" width="128" alt="Ein corgi logo" />
 
 # Ein
 
-An AI agent for your terminal — self-hosted, plugin-driven, and yours.
+<p align="center">
+  <img src="assets/corgi.png" width="200" alt="Ein corgi logo" />
+</p>
+<p align="center">An AI agent for your terminal — self-hosted, plugin-driven, and yours.</p>
+
+<br>
 
 
 ```
