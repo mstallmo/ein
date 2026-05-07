@@ -1,4 +1,4 @@
-<img src="assets/corgi.svg" width="128" alt="Ein corgi logo" />
+<img src="assets/corgi.png" width="128" alt="Ein corgi logo" />
 
 # Ein
 
