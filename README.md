@@ -1,4 +1,4 @@
-<img src="https://tangled.org/mstallmo.com/ein/raw/main/assets/corgi.svg" width="128" alt="Ein corgi logo" />
+<img src="assets/corgi.svg" width="128" alt="Ein corgi logo" />
 
 # Ein
 
