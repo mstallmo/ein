@@ -397,7 +397,7 @@ jobs:
           persist-credentials: false
       - name: Install mdbook
         shell: bash
-        run: "curl -sSL https://github.com/rust-lang/mdBook/releases/download/0.5.2/mdbook-0.5.2-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.cargo/bin"
+        run: "curl --proto '=https' --tlsv1.2 -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.cargo/bin"
       - name: Build book
         run: mdbook build book
       - name: Setup Pages
