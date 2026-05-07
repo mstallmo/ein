@@ -2,7 +2,7 @@
 # Ein
 
 <p align="center">
-  <img src="assets/corgi.png" width="200" alt="Ein corgi logo" />
+  <img src="assets/corgi.png" width="200" alt="Ein corgi logo" style="border: none; outline: none;" />
 </p>
 <p align="center">An AI agent for your terminal — self-hosted, plugin-driven, and yours.</p>
 
