@@ -1,6 +1,6 @@
 ---
 authors: Mason Stallmo <mason@stallmo.com>
-state: discussion
+state: accepted 
 discussion: https://tangled.org/did:plc:aj4au7qecohfi7zlimyxow2r/pulls/11
 labels: security, vm, tools, sandbox
 ---
