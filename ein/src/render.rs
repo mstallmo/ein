@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -150,6 +150,286 @@ fn highlight_line_spans(h: &mut HighlightLines, ps: &SyntaxSet, line: &str) -> V
             .collect(),
         Err(_) => vec![Span::raw(line.to_string())],
     }
+}
+
+// ---------------------------------------------------------------------------
+// Markdown rendering
+// ---------------------------------------------------------------------------
+
+/// Convert a markdown string to a list of styled ratatui `Line`s.
+///
+/// Handles headings, bold, italic, inline code, fenced code blocks (syntax-
+/// highlighted via syntect), ordered and unordered lists, blockquotes, and
+/// horizontal rules. Plain text passes through unchanged.
+fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
+    use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    let mut bold = false;
+    let mut italic = false;
+    let mut strikethrough = false;
+    let mut in_code_block = false;
+    let mut code_lang = String::new();
+    let mut code_buf = String::new();
+    let mut blockquote_depth: u32 = 0;
+    // Stack: None = unordered, Some(n) = ordered with next item number n
+    let mut list_stack: Vec<Option<u64>> = Vec::new();
+    let mut item_depth: u32 = 0;
+    let mut item_needs_prefix = false;
+    let mut task_list_item = false;
+    let mut heading: Option<u8> = None;
+
+    macro_rules! flush_line {
+        () => {
+            if !spans.is_empty() {
+                lines.push(Line::from(std::mem::take(&mut spans)));
+            }
+        };
+    }
+
+    macro_rules! span_style {
+        () => {{
+            let mut s = Style::default();
+            if bold {
+                s = s.add_modifier(Modifier::BOLD);
+            }
+            if italic {
+                s = s.add_modifier(Modifier::ITALIC);
+            }
+            if strikethrough {
+                s = s.add_modifier(Modifier::CROSSED_OUT);
+            }
+            s
+        }};
+    }
+
+    for event in Parser::new_ext(text, Options::all()) {
+        match event {
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                flush_line!();
+                // Only add spacing after paragraphs outside list items and blockquotes
+                if item_depth == 0 && blockquote_depth == 0 {
+                    lines.push(Line::raw(""));
+                }
+            }
+
+            Event::Start(Tag::Heading { level, .. }) => {
+                heading = Some(match level {
+                    HeadingLevel::H1 => 1,
+                    HeadingLevel::H2 => 2,
+                    HeadingLevel::H3 => 3,
+                    HeadingLevel::H4 => 4,
+                    HeadingLevel::H5 => 5,
+                    HeadingLevel::H6 => 6,
+                });
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                let lvl = heading.unwrap_or(1);
+                let styled: Vec<Span<'static>> = std::mem::take(&mut spans)
+                    .into_iter()
+                    .map(|s| {
+                        let mut style = s.style.add_modifier(Modifier::BOLD);
+
+                        if lvl <= 2 {
+                            style = style.fg(AUTOCOMPLETE_TOP_COLOR);
+                        }
+
+                        Span::styled(s.content, style)
+                    })
+                    .collect();
+
+                lines.push(Line::from(styled));
+                lines.push(Line::raw(""));
+                heading = None;
+            }
+            Event::Start(Tag::Strong) => bold = true,
+            Event::End(TagEnd::Strong) => bold = false,
+            Event::Start(Tag::Emphasis) => italic = true,
+            Event::End(TagEnd::Emphasis) => italic = false,
+            Event::Start(Tag::Strikethrough) => strikethrough = true,
+            Event::End(TagEnd::Strikethrough) => strikethrough = false,
+            Event::Start(Tag::BlockQuote(_)) => {
+                blockquote_depth += 1;
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                flush_line!();
+
+                blockquote_depth = blockquote_depth.saturating_sub(1);
+                if blockquote_depth == 0 {
+                    lines.push(Line::raw(""));
+                }
+            }
+            Event::Start(Tag::List(start)) => {
+                flush_line!(); // flush enclosing item text before starting sub-list
+
+                list_stack.push(start.map(|n| n as u64));
+            }
+            Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
+
+                if list_stack.is_empty() {
+                    lines.push(Line::raw(""));
+                }
+            }
+            Event::Start(Tag::Item) => {
+                item_depth += 1;
+                item_needs_prefix = true;
+            }
+            Event::End(TagEnd::Item) => {
+                flush_line!();
+
+                item_depth = item_depth.saturating_sub(1);
+                item_needs_prefix = false;
+                task_list_item = false;
+                // Advance the ordered list counter
+                if let Some(Some(n)) = list_stack.last_mut() {
+                    *n += 1;
+                }
+            }
+            Event::Start(Tag::CodeBlock(kind)) => {
+                in_code_block = true;
+                code_lang = match &kind {
+                    CodeBlockKind::Fenced(lang) => lang.trim().to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                code_buf.clear();
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                let ps = syntax_set();
+                let ts = theme_set();
+                let syntax = if !code_lang.is_empty() {
+                    ps.find_syntax_by_token(&code_lang)
+                        .unwrap_or_else(|| ps.find_syntax_plain_text())
+                } else {
+                    ps.find_syntax_plain_text()
+                };
+                let mut h = HighlightLines::new(syntax, &ts.themes["base16-ocean.dark"]);
+                for code_line in code_buf.trim_end_matches('\n').split('\n') {
+                    let hspans = highlight_line_spans(&mut h, ps, code_line);
+                    lines.push(Line::from(hspans));
+                }
+                lines.push(Line::raw(""));
+                code_lang.clear();
+                code_buf.clear();
+            }
+            Event::Text(t) => {
+                if in_code_block {
+                    code_buf.push_str(&t);
+                } else {
+                    // Inject bullet/number prefix at the start of a list item
+                    if item_needs_prefix {
+                        item_needs_prefix = false;
+                        let depth = list_stack.len().saturating_sub(1);
+                        let indent = "  ".repeat(depth);
+                        let prefix_span = match list_stack.last() {
+                            Some(Some(n)) => Span::styled(
+                                format!("{indent}{n}. "),
+                                Style::default().fg(MUTED_COLOR),
+                            ),
+                            _ => {
+                                if task_list_item {
+                                    Span::styled(format!("{indent} "), Style::default())
+                                } else {
+                                    Span::styled(
+                                        format!("{indent}• "),
+                                        Style::default().fg(MUTED_COLOR),
+                                    )
+                                }
+                            }
+                        };
+
+                        spans.push(prefix_span);
+                    } else if blockquote_depth > 0 && spans.is_empty() {
+                        spans.push(Span::styled(
+                            "│ ".repeat(blockquote_depth as usize),
+                            Style::default().fg(MUTED_COLOR),
+                        ));
+                    }
+
+                    // Text events may contain embedded newlines
+                    let t_str = t.as_ref();
+                    let mut parts = t_str.split('\n');
+                    if let Some(first) = parts.next() {
+                        if !first.is_empty() {
+                            spans.push(Span::styled(first.to_string(), span_style!()));
+                        }
+                    }
+                    for rest in parts {
+                        flush_line!();
+                        if !rest.is_empty() {
+                            if blockquote_depth > 0 {
+                                spans.push(Span::styled(
+                                    "│ ".repeat(blockquote_depth as usize),
+                                    Style::default().fg(MUTED_COLOR),
+                                ));
+                            }
+                            spans.push(Span::styled(rest.to_string(), span_style!()));
+                        }
+                    }
+                }
+            }
+            Event::Code(t) => {
+                // Inject list item prefix if needed
+                if item_needs_prefix {
+                    item_needs_prefix = false;
+                    let depth = list_stack.len().saturating_sub(1);
+                    let indent = "  ".repeat(depth);
+                    let prefix = match list_stack.last() {
+                        Some(Some(n)) => format!("{indent}{n}. "),
+                        _ => format!("{indent}• "),
+                    };
+                    spans.push(Span::styled(prefix, Style::default().fg(MUTED_COLOR)));
+                }
+
+                spans.push(Span::styled(
+                    format!("{}", t.as_ref()),
+                    Style::default().fg(THINKING_COLOR),
+                ));
+            }
+            Event::TaskListMarker(checked) => {
+                task_list_item = true;
+                let span = if checked {
+                    Span::default().content("\u{2714}").fg(Color::Green)
+                } else {
+                    Span::default().content("[ ]")
+                };
+
+                spans.push(span);
+            }
+            // Treat soft breaks as line breaks so single-newline content stays on separate lines
+            Event::SoftBreak | Event::HardBreak => {
+                flush_line!();
+            }
+            Event::Rule => {
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(40),
+                    Style::default().fg(MUTED_COLOR),
+                )));
+                lines.push(Line::raw(""));
+            }
+            _ => {}
+        }
+    }
+
+    // Flush any remaining spans
+    if !spans.is_empty() {
+        lines.push(Line::from(spans));
+    }
+
+    // Ensure exactly one trailing blank line for spacing consistency with other message variants
+    let last_is_blank = lines
+        .last()
+        .map(|l| l.spans.iter().all(|s| s.content.is_empty()))
+        .unwrap_or(false);
+    if !last_is_blank {
+        lines.push(Line::raw(""));
+    }
+
+    lines
 }
 
 // ---------------------------------------------------------------------------
@@ -437,10 +717,7 @@ pub(crate) fn build_lines(messages: &[DisplayMessage]) -> Vec<Line<'static>> {
                 lines.push(Line::raw(""));
             }
             DisplayMessage::AgentText(text) => {
-                for line in text.lines() {
-                    lines.push(Line::raw(line.to_string()));
-                }
-                lines.push(Line::raw(""));
+                lines.extend(markdown_to_lines(text));
             }
             DisplayMessage::ToolCall {
                 name,
@@ -1177,8 +1454,20 @@ fn format_session_date(unix_secs: i64) -> String {
 
 #[cfg(test)]
 mod unit {
-    use super::build_lines;
-    use crate::app::DisplayMessage;
+    use super::{build_lines, markdown_to_lines};
+    use crate::{app::DisplayMessage, render::AUTOCOMPLETE_TOP_COLOR};
+    use ratatui::style::{Color, Style, Stylize};
+
+    fn read_fixture(filename: &str) -> Vec<u8> {
+        use std::{env, fs};
+
+        let fixture_path = format!(
+            "{}/tests/fixtures/{filename}",
+            env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")
+        );
+
+        fs::read(&fixture_path).expect(&format!("FAILED TO READ fixture path {fixture_path}"))
+    }
 
     #[test]
     fn build_lines_tool_call_caps_at_8_output_lines() {
@@ -1226,6 +1515,304 @@ mod unit {
         let lines = build_lines(&msgs);
         // 1 header + 0 output rows + 1 trailing blank = 2
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn markdown_heading_1() {
+        let lines = markdown_to_lines("# Heading 1");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 1");
+        assert_eq!(
+            span.style,
+            Style::default().fg(AUTOCOMPLETE_TOP_COLOR).bold()
+        );
+    }
+
+    #[test]
+    fn markdown_heading_2() {
+        let lines = markdown_to_lines("## Heading 2");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 2");
+        assert_eq!(
+            span.style,
+            Style::default().fg(AUTOCOMPLETE_TOP_COLOR).bold()
+        );
+    }
+
+    #[test]
+    fn markdown_heading_3() {
+        let lines = markdown_to_lines("### Heading 3");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 3");
+        assert_eq!(span.style, Style::default().bold());
+    }
+
+    #[test]
+    fn markdown_heading_4() {
+        let lines = markdown_to_lines("#### Heading 4");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 4");
+        assert_eq!(span.style, Style::default().bold());
+    }
+
+    #[test]
+    fn markdown_heading_5() {
+        let lines = markdown_to_lines("##### Heading 5");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 5");
+        assert_eq!(span.style, Style::default().bold());
+    }
+
+    #[test]
+    fn markdown_heading_6() {
+        let lines = markdown_to_lines("###### Heading 6");
+        assert_eq!(lines.len(), 2);
+
+        let header = &lines[0];
+        let spans = &header.spans;
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.to_string(), "Heading 6");
+        assert_eq!(span.style, Style::default().bold());
+    }
+
+    #[test]
+    fn markdown_text() {
+        let fixture_bytes = read_fixture("text.md");
+        let markdown_text =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_text);
+        assert_eq!(lines.len(), 3);
+
+        let line = &lines[0];
+        assert_eq!(line.spans.len(), 9);
+        assert_eq!(line.spans[0].style, Style::default());
+        assert_eq!(line.spans[1].style, Style::default().bold());
+        assert_eq!(line.spans[2].style, Style::default());
+        assert_eq!(line.spans[3].style, Style::default().italic());
+        assert_eq!(line.spans[4].style, Style::default());
+        assert_eq!(line.spans[5].style, Style::default().bold().italic());
+        assert_eq!(line.spans[6].style, Style::default());
+        assert_eq!(line.spans[7].style, Style::default().crossed_out());
+        assert_eq!(line.spans[8].style, Style::default());
+    }
+
+    #[test]
+    fn markdown_unordered_list() {
+        let fixture_bytes = read_fixture("unordered_list.md");
+        let markdown_lists =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_lists);
+        assert_eq!(lines.len(), 6);
+
+        // First entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[0].spans[0];
+        let content_span = &lines[0].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "• ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Item 1");
+
+        // Second entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[1].spans[0];
+        let content_span = &lines[1].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "• ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Item 2");
+
+        // First nested entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[2].spans[0];
+        let content_span = &lines[2].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "  • ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Nested Item 2.1");
+
+        // Second nested entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[3].spans[0];
+        let content_span = &lines[3].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "  • ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Nested Item 2.2");
+
+        // Third entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[4].spans[0];
+        let content_span = &lines[4].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "• ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Item 3");
+    }
+
+    #[test]
+    fn markdown_ordered_list() {
+        let fixture_bytes = read_fixture("ordered_list.md");
+        let markdown_lists =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_lists);
+        assert_eq!(lines.len(), 4);
+
+        // First entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[0].spans[0];
+        let content_span = &lines[0].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "1. ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "First step");
+
+        // Second entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[1].spans[0];
+        let content_span = &lines[1].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "2. ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Second step");
+
+        // Third entry
+        assert_eq!(lines[0].spans.len(), 2);
+        let marker_span = &lines[2].spans[0];
+        let content_span = &lines[2].spans[1];
+        assert_eq!(marker_span.style, Style::default().dark_gray());
+        assert_eq!(marker_span.to_string(), "3. ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Third step");
+    }
+
+    #[test]
+    fn markdown_task_list() {
+        let fixture_bytes = read_fixture("task_list.md");
+        let markdown_lists =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_lists);
+        assert_eq!(lines.len(), 5);
+
+        // First entry
+        assert_eq!(lines[0].spans.len(), 3);
+        let marker_span = &lines[0].spans[0];
+        let spacer_span = &lines[0].spans[1];
+        let content_span = &lines[0].spans[2];
+        assert_eq!(marker_span.style, Style::default().green());
+        assert_eq!(marker_span.to_string(), "\u{2714}");
+        assert_eq!(spacer_span.to_string(), " ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Implement core parser");
+
+        // Second entry
+        assert_eq!(lines[1].spans.len(), 3);
+        let marker_span = &lines[1].spans[0];
+        let spacer_span = &lines[1].spans[1];
+        let content_span = &lines[1].spans[2];
+        assert_eq!(marker_span.style, Style::default());
+        assert_eq!(marker_span.to_string(), "[ ]");
+        assert_eq!(spacer_span.to_string(), " ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Add theme support");
+
+        // Third entry
+        assert_eq!(lines[2].spans.len(), 3);
+        let marker_span = &lines[2].spans[0];
+        let spacer_span = &lines[2].spans[1];
+        let content_span = &lines[2].spans[2];
+        assert_eq!(marker_span.style, Style::default());
+        assert_eq!(marker_span.to_string(), "[ ]");
+        assert_eq!(spacer_span.to_string(), " ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Fix edge cases with backticks");
+
+        // Fourth entry
+        assert_eq!(lines[3].spans.len(), 3);
+        let marker_span = &lines[3].spans[0];
+        let spacer_span = &lines[3].spans[1];
+        let content_span = &lines[3].spans[2];
+        assert_eq!(marker_span.style, Style::default());
+        assert_eq!(marker_span.to_string(), "[ ]");
+        assert_eq!(spacer_span.to_string(), " ");
+        assert_eq!(content_span.style, Style::default());
+        assert_eq!(content_span.to_string(), "Release v1.0");
+    }
+
+    #[test]
+    fn markdown_code() {
+        let fixture_bytes = read_fixture("code.md");
+        let markdown_code =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_code);
+        assert_eq!(lines.len(), 4);
+
+        let line = &lines[0];
+        assert_eq!(line.spans.len(), 2);
+        assert_eq!(
+            line.spans[0].style,
+            Style::default().fg(Color::Rgb(143, 161, 179))
+        );
+        assert_eq!(line.spans[0].to_string(), "$");
+        assert_eq!(
+            line.spans[1].style,
+            Style::default().fg(Color::Rgb(192, 197, 206))
+        );
+        assert_eq!(line.spans[1].to_string(), " git init");
+    }
+
+    #[test]
+    fn markdown_blockquotes() {
+        let fixture_bytes = read_fixture("blockquotes.md");
+        let markdown_blockquotes =
+            String::from_utf8(fixture_bytes).expect(&format!("Failed to parse bytes"));
+
+        let lines = markdown_to_lines(&markdown_blockquotes);
+        assert_eq!(lines.len(), 2);
+
+        let line = &lines[0];
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(
+            line.spans[0].to_string(),
+            "│ “The best way to predict the future is to invent it.” — Alan Kay"
+        );
     }
 }
 

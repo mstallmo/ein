@@ -1,0 +1,4 @@
+- [x] Implement core parser
+- [ ] Add theme support
+- [ ] Fix edge cases with backticks
+- [ ] Release v1.0
