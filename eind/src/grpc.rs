@@ -32,6 +32,7 @@ use tonic::{Request, Response, Status, Streaming};
 use wasmtime::Engine;
 
 use crate::model_client::ModelClientSessionManager;
+use crate::persistence::SessionStore;
 use crate::tools::ToolSetManager;
 use ein_proto::ein::{
     AgentError, AgentEvent as AgentEventProto, CheckPluginsRequest, CheckPluginsResponse,
@@ -50,25 +51,38 @@ pub struct AgentServer {
     config: Arc<crate::EinConfig>,
     model_client_session_manager: ModelClientSessionManager,
     tool_set_manager: ToolSetManager,
-    session_store: Arc<crate::persistence::SessionStore>,
+    session_store: Arc<dyn SessionStore>,
 }
 
 impl AgentServer {
-    /// Creates a new `AgentServer`.
+    /// Creates a new `AgentServer` backed by the default SQLite session store
+    /// at `EinConfig::default().db_path`.
     ///
     /// - Initialises the Wasmtime engine and pre-populates the component
     ///   linkers with WASI and the Ein plugin host functions.
     /// - Scans the model client directory to determine the fallback plugin
     ///   name; no WASM compilation happens at this point.
     pub async fn new() -> anyhow::Result<Self> {
-        let config = Arc::new(crate::EinConfig::default());
+        let session_store = crate::open_default_session_store().await?;
+        Self::with_session_store(crate::EinConfig::default(), session_store).await
+    }
+
+    /// Creates an `AgentServer` backed by a caller-supplied session store.
+    ///
+    /// This is the injection point for embedders that want to persist sessions
+    /// in their own database instead of the bundled SQLite store. `config`
+    /// still drives plugin discovery and data directories; its `db_path` field
+    /// is unused when the store is supplied here.
+    pub async fn with_session_store(
+        config: crate::EinConfig,
+        session_store: Arc<dyn SessionStore>,
+    ) -> anyhow::Result<Self> {
+        let config = Arc::new(config);
         let engine = Engine::default();
 
         let model_client_session_manager =
             ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
         let tool_set_manager = ToolSetManager::new(&config.plugin_dir, engine).await?;
-        let session_store =
-            Arc::new(crate::persistence::SessionStore::open(&config.db_path).await?);
 
         Ok(Self {
             config,

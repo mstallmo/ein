@@ -40,3 +40,8 @@ wasmtime-wasi-http = "42.0.1"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls"] }
 xz2 = { workspace = true }
 tar = "0.4.45"
+
+[dev-dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

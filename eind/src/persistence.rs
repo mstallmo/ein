@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-//! SQLite-backed session persistence.
+//! Session persistence.
 //!
-//! [`SessionStore`] stores session configs and message histories so they
-//! survive server restarts. Sessions are identified by UUID v7, which is
-//! unique across independent databases and sortable by creation time.
+//! [`SessionStore`] is the storage abstraction the server uses to persist
+//! session configs and message histories so they survive restarts. The server
+//! only ever holds an `Arc<dyn SessionStore>`, so downstream embedders (e.g. a
+//! larger system built on top of `eind`) can supply their own database-backed
+//! implementation instead of the bundled SQLite one.
+//!
+//! [`SqliteSessionStore`] is the default implementation. Sessions are
+//! identified by UUID v7, which is unique across independent databases and
+//! sortable by creation time.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use ein_plugin::model_client::Message;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -93,12 +100,51 @@ fn extract_preview(messages_json: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Async SQLite session store backed by a connection pool.
-pub struct SessionStore {
+/// Storage backend for session configs and message histories.
+///
+/// The server interacts with persistence solely through this trait, holding an
+/// `Arc<dyn SessionStore>`. [`SqliteSessionStore`] is the bundled default;
+/// embedders can implement this trait against their own database and inject it
+/// via [`AgentServer::with_session_store`](crate::AgentServer::with_session_store)
+/// or [`run_with_store`](crate::run_with_store).
+///
+/// Sessions are keyed by a string `id` — a UUID v7 assigned by the server.
+/// Implementations must be safe to share across concurrent session tasks
+/// (`Send + Sync`).
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Insert a new session record. Returns an error if `id` already exists.
+    ///
+    /// `config_json` is stored for auditing and session-list UX (e.g. showing
+    /// which model or paths were active). It is not read back during resume —
+    /// the client always re-sends a fresh `SessionConfig` on reconnect.
+    async fn create_session(&self, id: &str, config_json: &str) -> Result<()>;
+
+    /// Return `true` if `id` names an existing session.
+    async fn session_exists(&self, id: &str) -> Result<bool>;
+
+    /// Load the message history for `id`. Returns `None` if the session does
+    /// not exist, or `Some(vec![])` if it exists but has no messages yet.
+    async fn load_messages(&self, id: &str) -> Result<Option<Vec<Message>>>;
+
+    /// Return a summary of all sessions, ordered newest-first.
+    async fn list_sessions(&self) -> Result<Vec<SessionSummaryData>>;
+
+    /// Permanently delete a session and its message history.
+    ///
+    /// Succeeds whether or not the session existed.
+    async fn delete_session(&self, id: &str) -> Result<()>;
+
+    /// Overwrite the stored message history for an existing session.
+    async fn save_messages(&self, id: &str, messages: &[Message]) -> Result<()>;
+}
+
+/// Default [`SessionStore`] backed by an async SQLite connection pool.
+pub struct SqliteSessionStore {
     pool: SqlitePool,
 }
 
-impl SessionStore {
+impl SqliteSessionStore {
     /// Open (or create) the database at `path` and run pending migrations.
     pub async fn open(path: &Path) -> Result<Self> {
         let pool = SqlitePool::connect_with(
@@ -132,13 +178,11 @@ impl SessionStore {
 
         Ok(Self { pool })
     }
+}
 
-    /// Insert a new session record. Returns an error if `id` already exists.
-    ///
-    /// `config_json` is stored for auditing and future session-list UX (e.g. showing
-    /// which model or paths were active). It is not read back during session resume —
-    /// the client always re-sends a fresh `SessionConfig` on reconnect.
-    pub async fn create_session(&self, id: &str, config_json: &str) -> Result<()> {
+#[async_trait]
+impl SessionStore for SqliteSessionStore {
+    async fn create_session(&self, id: &str, config_json: &str) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -159,8 +203,7 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Return `true` if `id` names an existing session.
-    pub async fn session_exists(&self, id: &str) -> Result<bool> {
+    async fn session_exists(&self, id: &str) -> Result<bool> {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sessions WHERE id = ?")
             .bind(id)
             .fetch_one(&self.pool)
@@ -170,9 +213,7 @@ impl SessionStore {
         Ok(row.0 > 0)
     }
 
-    /// Load the message history for `id`. Returns `None` if the session does
-    /// not exist.
-    pub async fn load_messages(&self, id: &str) -> Result<Option<Vec<Message>>> {
+    async fn load_messages(&self, id: &str) -> Result<Option<Vec<Message>>> {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT messages_json FROM sessions WHERE id = ?")
                 .bind(id)
@@ -191,8 +232,7 @@ impl SessionStore {
         }
     }
 
-    /// Return a summary of all sessions, ordered newest-first.
-    pub async fn list_sessions(&self) -> Result<Vec<SessionSummaryData>> {
+    async fn list_sessions(&self) -> Result<Vec<SessionSummaryData>> {
         let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
             "SELECT id, created_at, messages_json, session_config_json
              FROM sessions ORDER BY created_at DESC",
@@ -214,10 +254,7 @@ impl SessionStore {
             .collect())
     }
 
-    /// Permanently delete a session and its message history.
-    ///
-    /// Returns `Ok(())` whether or not the session existed.
-    pub async fn delete_session(&self, id: &str) -> Result<()> {
+    async fn delete_session(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -227,8 +264,7 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Overwrite the stored message history for an existing session.
-    pub async fn save_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
+    async fn save_messages(&self, id: &str, messages: &[Message]) -> Result<()> {
         let json = serde_json::to_string(messages).context("serialising messages")?;
         let result = sqlx::query("UPDATE sessions SET messages_json = ? WHERE id = ?")
             .bind(&json)
@@ -248,8 +284,8 @@ mod tests {
     use super::*;
     use ein_plugin::model_client::Role;
 
-    async fn make_store() -> SessionStore {
-        SessionStore::open_in_memory()
+    async fn make_store() -> SqliteSessionStore {
+        SqliteSessionStore::open_in_memory()
             .await
             .expect("in-memory store")
     }
