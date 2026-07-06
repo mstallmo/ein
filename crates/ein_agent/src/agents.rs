@@ -3,7 +3,7 @@
 
 use ein_core::types::{FinishReason, FunctionCall, Message, Role, ToolCall};
 use futures::future::BoxFuture;
-use tracing::{error, info};
+use tracing::{Instrument, error, info};
 
 use crate::errors::{AgentError, ToolError};
 use crate::model_clients::ModelClient;
@@ -89,6 +89,12 @@ pub struct AgentBuilder<MC: ModelClient, TS: ToolSet> {
     model_client: MC,
     tools: TS,
     message_history: Vec<Message>,
+    /// Inbound W3C trace-context headers (`traceparent`/`tracestate`) supplied
+    /// by the driver. Only consumed to root the session span under the `otel`
+    /// feature; otherwise carried but unread.
+    #[cfg_attr(not(feature = "otel"), allow(dead_code))]
+    trace_headers: Vec<(String, String)>,
+    session_id: Option<String>,
 }
 
 impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
@@ -114,6 +120,24 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
         self
     }
 
+    /// Supplies inbound W3C trace-context headers (e.g. `traceparent`) so the
+    /// session span roots under the caller's distributed trace across a task or
+    /// process boundary. Interpreted only when the `otel` feature is enabled; a
+    /// harmless no-op otherwise. When omitted, the session span nests under the
+    /// ambient current span, so in-process callers stay correlated for free.
+    pub fn with_trace_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.trace_headers = headers;
+
+        self
+    }
+
+    /// Records the session identifier on the session span for correlation.
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+
+        self
+    }
+
     pub fn with_message_history(mut self, history: Vec<Message>) -> Self {
         self.message_history = history;
 
@@ -125,6 +149,8 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
             self.tools.set_event_handler(handler.clone());
         }
 
+        let session_span = self.build_session_span();
+
         Agent::new(
             self.num_recent_messages,
             self.max_tool_result_chars,
@@ -132,7 +158,42 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
             self.event_handler,
             self.tools,
             self.message_history,
+            session_span,
         )
+    }
+
+    /// Builds the long-lived session span every chat turn nests under.
+    ///
+    /// With the `otel` feature and caller-supplied [`trace_headers`], the span is
+    /// re-parented to the extracted remote trace context so the agent loop joins
+    /// the caller's distributed trace even when driven from a detached task.
+    /// Without headers it keeps its natural parent (the ambient current span),
+    /// so nothing is detached for in-process callers.
+    ///
+    /// [`trace_headers`]: Self::with_trace_headers
+    fn build_session_span(&self) -> tracing::Span {
+        let session_span = tracing::info_span!(
+            "agent_session",
+            otel.kind = "server",
+            session.id = self.session_id.as_deref().unwrap_or_default(),
+        );
+
+        #[cfg(feature = "otel")]
+        if !self.trace_headers.is_empty() {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+            let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
+                propagator.extract(&crate::telemetry::HeaderExtractor(&self.trace_headers))
+            });
+
+            // Best-effort: only fails when no OTel layer is installed or the span
+            // is disabled — both benign, the loop simply self-roots.
+            if let Err(err) = session_span.set_parent(parent_cx) {
+                tracing::trace!(%err, "no otel layer to attach remote trace context");
+            }
+        }
+
+        session_span
     }
 }
 
@@ -152,6 +213,10 @@ pub struct Agent<MC: ModelClient, TS: ToolSet> {
     event_handler: Option<AgentEventHandler>,
     tools: TS,
     messages: Vec<Message>,
+    /// Long-lived span for the whole session; each chat turn is nested under it
+    /// so the agent loop stays attached to the caller's trace across task
+    /// boundaries. See [`AgentBuilder::build_session_span`].
+    session_span: tracing::Span,
 }
 
 impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
@@ -165,6 +230,8 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
             model_client: client,
             tools: tool_set,
             message_history: Vec::new(),
+            trace_headers: Vec::new(),
+            session_id: None,
         }
     }
 
@@ -195,7 +262,15 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
     /// can display it. Saves nothing — the caller (`grpc.rs`) owns persistence.
     ///
     /// Returns the summary string (empty if there was nothing to compact).
+    ///
+    /// Runs under a `compact_history` span parented to the session span, keeping
+    /// the summarisation call attached to the caller's trace like a chat turn.
     pub async fn compact_history(&mut self) -> AgentResult<String> {
+        let span = tracing::info_span!(parent: &self.session_span, "compact_history");
+        self.run_compact().instrument(span).await
+    }
+
+    async fn run_compact(&mut self) -> AgentResult<String> {
         // Nothing to compact if there are no conversational turns yet.
         if !self.messages.iter().any(|m| matches!(m.role, Role::User)) {
             return Ok(String::new());
@@ -273,7 +348,17 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
     /// stops. The updated message history (including assistant turns and tool
     /// results) is written back into `messages` in place so the caller's
     /// conversation state stays current.
+    ///
+    /// Wraps [`run_turn`](Self::run_turn) in a `chat_turn` span parented to the
+    /// session span, so the turn — and every event/child span it emits — stays
+    /// attached to the caller's trace even though the driver typically runs this
+    /// on a detached task.
     pub async fn chat(&mut self, prompt: impl ToString) -> AgentResult<Message> {
+        let span = tracing::info_span!(parent: &self.session_span, "chat_turn");
+        self.run_turn(prompt).instrument(span).await
+    }
+
+    async fn run_turn(&mut self, prompt: impl ToString) -> AgentResult<Message> {
         let mut cumulative_prompt = 0;
         let mut cumulative_completion = 0;
 
@@ -296,9 +381,16 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
             //     model_session.params().max_tokens,
             // );
 
+            let completion_span = tracing::debug_span!(
+                "model.completion",
+                gen_ai.usage.input_tokens = tracing::field::Empty,
+                gen_ai.usage.output_tokens = tracing::field::Empty,
+            );
+
             let resp = match self
                 .model_client
                 .complete(&self.messages, &self.tools.schemas())
+                .instrument(completion_span.clone())
                 .await
             {
                 Ok(r) => r,
@@ -322,6 +414,11 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
 
             // Extract and accumulate token usage from this response.
             if let Some(usage) = &resp.usage {
+                completion_span.record("gen_ai.usage.input_tokens", i64::from(usage.prompt_tokens));
+                completion_span.record(
+                    "gen_ai.usage.output_tokens",
+                    i64::from(usage.completion_tokens),
+                );
                 info!(
                     "[agent] tokens this call: prompt={}, completion={}",
                     usage.prompt_tokens, usage.completion_tokens,
@@ -444,6 +541,7 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
         event_handler: Option<AgentEventHandler>,
         tools: TS,
         messages: Vec<Message>,
+        session_span: tracing::Span,
     ) -> Self {
         Self {
             num_recent_messages,
@@ -452,6 +550,7 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
             event_handler,
             tools,
             messages,
+            session_span,
         }
     }
 
@@ -488,6 +587,12 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
         }
     }
 
+    #[tracing::instrument(
+        name = "tool.exec",
+        level = "debug",
+        skip_all,
+        fields(tool.name = %function.name, tool_call_id = %id)
+    )]
     async fn handle_tool_call(
         &mut self,
         id: &str,
@@ -527,6 +632,8 @@ impl<MC: ModelClient> Agent<MC, NativeToolSet> {
             model_client: client,
             tools: NativeToolSet::default(),
             message_history: Vec::new(),
+            trace_headers: Vec::new(),
+            session_id: None,
         }
     }
 }

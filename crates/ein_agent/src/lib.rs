@@ -31,6 +31,8 @@
 pub mod agents;
 pub mod errors;
 pub mod model_clients;
+#[cfg(feature = "otel")]
+mod telemetry;
 pub mod tools;
 
 pub use agents::{Agent, AgentBuilder, AgentEvent, AgentEventHandler, SessionParams};

@@ -6,14 +6,23 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-anyhow             = { workspace = true }
-async-trait        = "0.1"
-ein_core           = { path = "../ein_core" }
-futures            = { workspace = true }
-serde              = { workspace = true }
-serde_json         = { workspace = true }
-thiserror          = { workspace = true }
-tracing            = { workspace = true }
+anyhow                = { workspace = true }
+async-trait           = "0.1"
+ein_core              = { path = "../ein_core" }
+futures               = { workspace = true }
+opentelemetry         = { version = "0.32", optional = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+thiserror             = { workspace = true }
+tracing               = { workspace = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[features]
+# Continue a caller's distributed trace: extract the inbound W3C context from
+# the trace headers handed to `AgentBuilder::with_trace_headers` and root the
+# session span under it. Pin these to the embedder's versions (Edward: 0.32 /
+# 0.33) — a skew silently degrades to "no remote parent".
+otel = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
