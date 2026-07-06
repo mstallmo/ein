@@ -15,8 +15,9 @@ mod tools;
 pub use plugins::install_plugins;
 
 // Session-storage abstraction. Embedders (e.g. Edward) implement
-// [`SessionStore`] against their own database and inject it via
-// [`run_with_store`] or [`AgentServer::with_session_store`].
+// [`SessionStore`] against their own database and inject it via [`run_with`] or
+// [`AgentServer::with_session_store`]. Runtime configuration is supplied the
+// same way, as an [`EinConfig`] the caller owns rather than a library default.
 pub use grpc::AgentServer;
 pub use persistence::{SessionStore, SessionSummaryData, SqliteSessionStore};
 
@@ -29,51 +30,57 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tonic::transport::Server;
 
-/// Start the Ein gRPC server with the default SQLite session store and block
-/// until it exits.
+/// Start the Ein gRPC server with the default [`EinConfig`] and the bundled
+/// SQLite session store, blocking until it exits.
 ///
-/// A thin wrapper over [`run_with_store`]: it opens the bundled SQLite store at
-/// `~/.ein/sessions.db` and hands it to the same serving path every embedder
-/// goes through.
+/// The zero-configuration entry point used by the standalone `eind` binary.
+/// Embedders that need to control the plugin/data directories or supply their
+/// own session store should use [`run_with`], pairing a caller-built
+/// [`EinConfig`] with a [`SessionStore`] (the bundled default is available via
+/// [`open_default_session_store`]).
 pub async fn run(port: u16) -> anyhow::Result<()> {
-    let store = open_default_session_store().await?;
-    run_with_store(port, store).await
+    let config = EinConfig::default();
+    let store = open_default_session_store(&config).await?;
+    run_with(port, config, store).await
 }
 
-/// Start the Ein gRPC server with a caller-supplied [`SessionStore`] and block
-/// until it exits.
+/// Start the server with a caller-supplied [`EinConfig`] and [`SessionStore`],
+/// blocking until it exits.
 ///
-/// This is the single serving path — [`run`] delegates here with the default
-/// store. It is also the entry point for systems built on top of `eind` that
-/// persist sessions in their own database. Plugin and data directories still
-/// come from [`EinConfig::default`].
-pub async fn run_with_store(port: u16, store: Arc<dyn SessionStore>) -> anyhow::Result<()> {
-    ensure_plugins_installed().await?;
-    let server = AgentServer::with_session_store(EinConfig::default(), store).await?;
+/// The fully explicit counterpart to [`run`]: the runtime configuration and
+/// session storage are entirely the caller's responsibility — the library
+/// injects no defaults of its own on this path.
+pub async fn run_with(
+    port: u16,
+    config: EinConfig,
+    store: Arc<dyn SessionStore>,
+) -> anyhow::Result<()> {
+    ensure_plugins_installed(&config).await?;
+    let server = AgentServer::with_session_store(config, store).await?;
     serve(port, server).await
 }
 
-/// Open the bundled SQLite-backed [`SessionStore`] at `EinConfig::default`'s
-/// `db_path`, creating the data directory first.
+/// Open the bundled SQLite-backed [`SessionStore`] at `config.db_path`,
+/// creating the data directory first.
 ///
-/// On a fresh install nothing else has created `~/.ein` yet (plugin install is
-/// the only other thing that would), so the directory is ensured here before
-/// SQLite tries to create the database file inside it.
-pub(crate) async fn open_default_session_store() -> anyhow::Result<Arc<dyn SessionStore>> {
-    let config = EinConfig::default();
+/// Exposed so callers that want a custom [`EinConfig`] but the default storage
+/// can build the store to hand to [`run_with`]. On a fresh install nothing else
+/// has created the data directory yet (plugin install is the only other thing
+/// that would), so it is ensured here before SQLite tries to create the
+/// database file inside it.
+pub async fn open_default_session_store(
+    config: &EinConfig,
+) -> anyhow::Result<Arc<dyn SessionStore>> {
     tokio::fs::create_dir_all(&config.data_dir).await?;
     Ok(Arc::new(SqliteSessionStore::open(&config.db_path).await?))
 }
 
-/// In release builds, download and install plugins if none are present.
-async fn ensure_plugins_installed() -> anyhow::Result<()> {
-    if !cfg!(debug_assertions) {
-        let config = EinConfig::default();
-
-        if plugins::plugins_missing(&config.plugin_dir).await {
-            println!("No plugins found, downloading from GitHub release...");
-            plugins::install_plugins(None).await?;
-        }
+/// In release builds, download and install plugins if none are present in
+/// `config.plugin_dir`.
+async fn ensure_plugins_installed(config: &EinConfig) -> anyhow::Result<()> {
+    if !cfg!(debug_assertions) && plugins::plugins_missing(&config.plugin_dir).await {
+        println!("No plugins found, downloading from GitHub release...");
+        plugins::install_plugins(None).await?;
     }
 
     Ok(())

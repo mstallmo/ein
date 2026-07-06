@@ -106,7 +106,7 @@ fn extract_preview(messages_json: &str) -> String {
 /// `Arc<dyn SessionStore>`. [`SqliteSessionStore`] is the bundled default;
 /// embedders can implement this trait against their own database and inject it
 /// via [`AgentServer::with_session_store`](crate::AgentServer::with_session_store)
-/// or [`run_with_store`](crate::run_with_store).
+/// or [`run_with`](crate::run_with).
 ///
 /// Sessions are keyed by a string `id` — a UUID v7 assigned by the server.
 /// Implementations must be safe to share across concurrent session tasks

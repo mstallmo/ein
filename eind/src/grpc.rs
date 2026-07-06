@@ -63,8 +63,9 @@ impl AgentServer {
     /// - Scans the model client directory to determine the fallback plugin
     ///   name; no WASM compilation happens at this point.
     pub async fn new() -> anyhow::Result<Self> {
-        let session_store = crate::open_default_session_store().await?;
-        Self::with_session_store(crate::EinConfig::default(), session_store).await
+        let config = crate::EinConfig::default();
+        let session_store = crate::open_default_session_store(&config).await?;
+        Self::with_session_store(config, session_store).await
     }
 
     /// Creates an `AgentServer` backed by a caller-supplied session store.

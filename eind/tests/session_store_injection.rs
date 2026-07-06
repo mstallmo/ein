@@ -240,5 +240,10 @@ async fn injected_store_rejects_invalid_operations() {
 #[allow(dead_code)]
 async fn _assert_injection_wiring(store: Arc<dyn SessionStore>) {
     let _ = eind::AgentServer::with_session_store(eind::EinConfig::default(), store).await;
-    let _ = eind::run_with_store(50051, Arc::new(MockSessionStore::default())).await;
+    let _ = eind::run_with(
+        50051,
+        eind::EinConfig::default(),
+        Arc::new(MockSessionStore::default()),
+    )
+    .await;
 }
