@@ -5,7 +5,6 @@ mod bindings;
 mod syscalls;
 
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +23,7 @@ use wasmtime_wasi_http::{
     types::{HostFutureIncomingResponse, OutgoingRequestConfig, default_send_request},
 };
 
+use crate::ModelClientSpec;
 use bindings::{ModelClient as ModelClientPlugin, ModelClientPre};
 
 /// Shared factory for creating per-session WASM model client instances.
@@ -62,24 +62,17 @@ impl ModelClientSessionManager {
         })
     }
 
-    /// Instantiates a model client for a new session from the given config.
+    /// Instantiates a model client for a new session from the given spec.
     ///
-    /// Selects the plugin named by `session_cfg.model_client_name`, falling
-    /// back to the first available plugin if the name is empty. Compiles and
-    /// links the plugin on first use; subsequent calls for the same plugin name
-    /// reuse the cached compiled component.
-    pub async fn new_session(
-        &self,
-        session_cfg: &ein_proto::ein::SessionConfig,
-    ) -> anyhow::Result<ModelClientSession> {
-        let model_client_name = if session_cfg.model_client_name.is_empty() {
-            self.fallback_name.deref()
-        } else {
-            &session_cfg.model_client_name
-        };
+    /// Selects the plugin named by `spec.client_name`, falling back to the first
+    /// available plugin if the name is empty. Compiles and links the plugin on
+    /// first use; subsequent calls for the same plugin name reuse the cached
+    /// compiled component.
+    pub async fn new_session(&self, spec: &ModelClientSpec) -> anyhow::Result<ModelClientSession> {
+        let model_client_name = resolve_client_name(spec, &self.fallback_name);
 
         let (params_json, allowed_hosts, session_params) =
-            extract_model_params(session_cfg, model_client_name);
+            extract_model_params(spec, model_client_name);
 
         if allowed_hosts.is_empty() {
             return Err(anyhow!(
@@ -101,11 +94,8 @@ impl ModelClientSessionManager {
                 .map_err(|err| anyhow!("Failed to instantiate model client: {err}"))?;
 
         println!(
-            "[session] params: model={}, max_tokens={}, allowed_paths={:?}, allowed_hosts={:?}",
-            session_params.model,
-            session_params.max_tokens,
-            session_cfg.allowed_paths,
-            session_cfg.allowed_hosts,
+            "[session] params: model={}, max_tokens={}",
+            session_params.model, session_params.max_tokens,
         );
         println!(
             "[session] model client: plugin={model_client_name}, allowed_hosts={:?}",
@@ -119,20 +109,31 @@ impl ModelClientSessionManager {
     }
 }
 
-/// Extracts model client parameters from a `SessionConfig`.
+/// Resolves which model client plugin to instantiate: the spec's `client_name`
+/// if present and non-empty, otherwise the scanned `fallback`.
+fn resolve_client_name<'a>(spec: &'a ModelClientSpec, fallback: &'a str) -> &'a str {
+    spec.client_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+}
+
+/// Extracts model client parameters from a [`ModelClientSpec`].
 ///
-/// Parses `config_json` from the plugin's `PluginConfig` entry, extracts the fields
-/// needed for session setup, and returns the raw `config_json` to pass directly to
-/// the WASM plugin constructor.
+/// Looks up the selected plugin's `params_json` (defaulting to `"{}"`), parses
+/// the fields needed for session setup, and returns the raw `params_json` to
+/// pass directly to the WASM plugin constructor.
 fn extract_model_params(
-    session_cfg: &ein_proto::ein::SessionConfig,
+    spec: &ModelClientSpec,
     model_client_name: &str,
 ) -> (String, Vec<String>, SessionParams) {
-    let pc = session_cfg.plugin_configs.get(model_client_name);
+    let params_json = spec
+        .plugin_params
+        .get(model_client_name)
+        .cloned()
+        .unwrap_or_else(|| "{}".to_string());
 
-    let config: serde_json::Value = pc
-        .map(|p| serde_json::from_str(&p.params_json).unwrap_or_default())
-        .unwrap_or_default();
+    let config: serde_json::Value = serde_json::from_str(&params_json).unwrap_or_default();
 
     let base_url = config["base_url"].as_str().unwrap_or_default();
     let model = config["model"]
@@ -145,17 +146,7 @@ fn extract_model_params(
         .map(|n| n as i32)
         .unwrap_or(2500);
 
-    if pc.map(|p| !p.allowed_hosts.is_empty()).unwrap_or(false) {
-        eprintln!(
-            "[model_client] The `allowed_hosts` config option for model clients is ignored. \
-             Only the `base_url` is used to derive the allowed host."
-        );
-    }
-
     let allowed_hosts = derive_allowed_hosts(base_url);
-    let params_json = pc
-        .map(|p| p.params_json.clone())
-        .unwrap_or_else(|| "{}".to_string());
 
     (
         params_json,
@@ -256,25 +247,9 @@ impl wasmtime_wasi_http::WasiHttpView for ModelClientState {
         request: hyper::Request<HyperOutgoingBody>,
         config: OutgoingRequestConfig,
     ) -> HttpResult<HostFutureIncomingResponse> {
-        // The WASI HTTP request model stores authority separately from the
-        // path, so wasmtime_wasi_http may not embed the host in the hyper
-        // URI. Fall back to the Host header if the URI has no host component.
-        let host = request
-            .uri()
-            .host()
-            .map(|h| h.to_string())
-            .or_else(|| {
-                request
-                    .headers()
-                    .get("host")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|h| h.split(':').next())
-                    .map(|h| h.to_string())
-            })
-            .unwrap_or_default();
+        let host = request_host(&request);
 
-        let allowed = self.allowed_hosts.contains("*") || self.allowed_hosts.contains(&host);
-        if !allowed {
+        if !host_allowed(&self.allowed_hosts, &host) {
             eprintln!(
                 "[model client] blocked request to '{host}' — not in allowlist {:?}. \
                  Set 'base_url' in ~/.ein/config.json to allow this host.",
@@ -285,6 +260,35 @@ impl wasmtime_wasi_http::WasiHttpView for ModelClientState {
 
         Ok(default_send_request(request, config))
     }
+}
+
+/// Extracts the target host from an outbound request.
+///
+/// The WASI HTTP request model stores authority separately from the path, so
+/// `wasmtime_wasi_http` may not embed the host in the hyper URI. Falls back to
+/// the `Host` header (port stripped) when the URI carries no host component, and
+/// returns an empty string when neither does.
+fn request_host<B>(request: &hyper::Request<B>) -> String {
+    request
+        .uri()
+        .host()
+        .map(|h| h.to_string())
+        .or_else(|| {
+            request
+                .headers()
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| h.split(':').next())
+                .map(|h| h.to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Returns whether `host` is permitted by the session's outbound allowlist.
+///
+/// A `"*"` entry allows any host; otherwise the host must be listed exactly.
+fn host_allowed(allowed_hosts: &HashSet<String>, host: &str) -> bool {
+    allowed_hosts.contains("*") || allowed_hosts.contains(host)
 }
 
 /// A live model client WASM plugin instance with its Wasmtime store.
@@ -480,4 +484,187 @@ impl ModelClientCache {
 struct ModelClientCacheInner {
     model_client_dir: PathBuf,
     cache: Mutex<HashMap<String, OnceCell<ModelClientPre<ModelClientState>>>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(client_name: Option<&str>, params: &[(&str, &str)]) -> ModelClientSpec {
+        ModelClientSpec {
+            client_name: client_name.map(str::to_string),
+            plugin_params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    // --- resolve_client_name ---
+
+    #[test]
+    fn resolve_client_name_prefers_spec_name() {
+        let s = spec(Some("ein_anthropic"), &[]);
+        assert_eq!(resolve_client_name(&s, "ein_openrouter"), "ein_anthropic");
+    }
+
+    #[test]
+    fn resolve_client_name_falls_back_when_absent() {
+        let s = spec(None, &[]);
+        assert_eq!(resolve_client_name(&s, "ein_openrouter"), "ein_openrouter");
+    }
+
+    #[test]
+    fn resolve_client_name_falls_back_when_empty() {
+        let s = spec(Some(""), &[]);
+        assert_eq!(resolve_client_name(&s, "ein_openrouter"), "ein_openrouter");
+    }
+
+    // --- derive_allowed_hosts ---
+
+    #[test]
+    fn derive_allowed_hosts_empty_denies_all() {
+        assert!(derive_allowed_hosts("").is_empty());
+    }
+
+    #[test]
+    fn derive_allowed_hosts_wildcard_allows_all() {
+        assert_eq!(derive_allowed_hosts("*"), vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn derive_allowed_hosts_extracts_https_host() {
+        assert_eq!(
+            derive_allowed_hosts("https://openrouter.ai/api/v1"),
+            vec!["openrouter.ai".to_string()]
+        );
+    }
+
+    #[test]
+    fn derive_allowed_hosts_strips_port_and_scheme() {
+        assert_eq!(
+            derive_allowed_hosts("http://localhost:11434"),
+            vec!["localhost".to_string()]
+        );
+    }
+
+    #[test]
+    fn derive_allowed_hosts_host_only_no_path() {
+        assert_eq!(
+            derive_allowed_hosts("https://api.anthropic.com"),
+            vec!["api.anthropic.com".to_string()]
+        );
+    }
+
+    // --- extract_model_params ---
+
+    #[test]
+    fn extract_model_params_defaults_when_plugin_absent() {
+        let s = spec(None, &[]);
+        let (params_json, allowed_hosts, params) = extract_model_params(&s, "ein_openrouter");
+
+        assert_eq!(params_json, "{}");
+        assert!(
+            allowed_hosts.is_empty(),
+            "missing base_url must deny all outbound"
+        );
+        assert_eq!(params.model, "anthropic/claude-haiku-4.5");
+        assert_eq!(params.max_tokens, 2500);
+    }
+
+    #[test]
+    fn extract_model_params_parses_full_config() {
+        let json = r#"{"api_key":"sk-or-x","base_url":"https://openrouter.ai/api/v1","model":"anthropic/claude-opus-4","max_tokens":4096}"#;
+        let s = spec(Some("ein_openrouter"), &[("ein_openrouter", json)]);
+        let (params_json, allowed_hosts, params) = extract_model_params(&s, "ein_openrouter");
+
+        // The raw params JSON is forwarded verbatim to the plugin constructor.
+        assert_eq!(params_json, json);
+        assert_eq!(allowed_hosts, vec!["openrouter.ai".to_string()]);
+        assert_eq!(params.model, "anthropic/claude-opus-4");
+        assert_eq!(params.max_tokens, 4096);
+    }
+
+    #[test]
+    fn extract_model_params_empty_model_falls_back_to_default() {
+        let json = r#"{"base_url":"*","model":""}"#;
+        let s = spec(Some("ein_ollama"), &[("ein_ollama", json)]);
+        let (_, allowed_hosts, params) = extract_model_params(&s, "ein_ollama");
+
+        assert_eq!(params.model, "anthropic/claude-haiku-4.5");
+        assert_eq!(allowed_hosts, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn extract_model_params_ignores_other_plugins_config() {
+        // Params are looked up by the resolved client name, not the whole map.
+        let s = spec(
+            Some("ein_openrouter"),
+            &[(
+                "ein_anthropic",
+                r#"{"base_url":"https://api.anthropic.com"}"#,
+            )],
+        );
+        let (params_json, allowed_hosts, _) = extract_model_params(&s, "ein_openrouter");
+
+        assert_eq!(params_json, "{}");
+        assert!(allowed_hosts.is_empty());
+    }
+
+    // --- host_allowed ---
+
+    fn host_set(hosts: &[&str]) -> HashSet<String> {
+        hosts.iter().map(|h| h.to_string()).collect()
+    }
+
+    #[test]
+    fn host_allowed_exact_match() {
+        let hosts = host_set(&["openrouter.ai"]);
+        assert!(host_allowed(&hosts, "openrouter.ai"));
+        assert!(!host_allowed(&hosts, "evil.example.com"));
+    }
+
+    #[test]
+    fn host_allowed_wildcard_allows_any() {
+        let hosts = host_set(&["*"]);
+        assert!(host_allowed(&hosts, "anything.example.com"));
+        assert!(host_allowed(&hosts, ""));
+    }
+
+    #[test]
+    fn host_allowed_empty_set_denies_all() {
+        let hosts = host_set(&[]);
+        assert!(!host_allowed(&hosts, "openrouter.ai"));
+    }
+
+    // --- request_host ---
+
+    #[test]
+    fn request_host_reads_uri_host() {
+        let req = hyper::Request::builder()
+            .uri("https://openrouter.ai/api/v1/chat/completions")
+            .body(())
+            .unwrap();
+        assert_eq!(request_host(&req), "openrouter.ai");
+    }
+
+    #[test]
+    fn request_host_falls_back_to_host_header() {
+        // Authority-form absent from the path-only URI; host lives in the header.
+        let req = hyper::Request::builder()
+            .uri("/api/v1/chat/completions")
+            .header("host", "api.anthropic.com:443")
+            .body(())
+            .unwrap();
+        assert_eq!(request_host(&req), "api.anthropic.com");
+    }
+
+    #[test]
+    fn request_host_empty_when_no_host_available() {
+        let req = hyper::Request::builder()
+            .uri("/api/v1/chat/completions")
+            .body(())
+            .unwrap();
+        assert_eq!(request_host(&req), "");
+    }
 }

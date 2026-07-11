@@ -26,20 +26,18 @@ use ein_proto::ein::{
     AgentFinished, ContentDelta, TokenUsage, ToolCallEnd, ToolCallStart, ToolOutputChunk,
     agent_event,
 };
+use ein_wasm::{ModelClientSpec, PluginConstraints, PluginRuntime, ToolSessionSpec};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
-use wasmtime::Engine;
 
-use crate::model_client::ModelClientSessionManager;
 use crate::persistence::SessionStore;
-use crate::tools::ToolSetManager;
 use ein_proto::ein::{
     AgentError, AgentEvent as AgentEventProto, CheckPluginsRequest, CheckPluginsResponse,
     DeleteSessionRequest, DeleteSessionResponse, HistoryMessage, HistoryToolCall,
     InstallPluginsRequest, InstallPluginsResponse, ListSessionsRequest, ListSessionsResponse,
-    PluginSourceStatus, SessionStarted, SessionSummary, UserInput, agent_event::Event,
-    agent_server::Agent as AgentService, user_input,
+    PluginSourceStatus, SessionConfig, SessionStarted, SessionSummary, UserInput,
+    agent_event::Event, agent_server::Agent as AgentService, user_input,
 };
 
 /// gRPC service struct.
@@ -49,8 +47,7 @@ use ein_proto::ein::{
 /// and cached — only plugins that are actually requested ever consume memory.
 pub struct AgentServer {
     config: Arc<crate::EinConfig>,
-    model_client_session_manager: ModelClientSessionManager,
-    tool_set_manager: ToolSetManager,
+    runtime: PluginRuntime,
     session_store: Arc<dyn SessionStore>,
 }
 
@@ -79,18 +76,51 @@ impl AgentServer {
         session_store: Arc<dyn SessionStore>,
     ) -> anyhow::Result<Self> {
         let config = Arc::new(config);
-        let engine = Engine::default();
 
-        let model_client_session_manager =
-            ModelClientSessionManager::new(&config.model_client_dir, engine.clone()).await?;
-        let tool_set_manager = ToolSetManager::new(&config.plugin_dir, engine).await?;
+        let runtime = PluginRuntime::new(&config.plugin_dir, &config.model_client_dir).await?;
 
         Ok(Self {
             config,
-            model_client_session_manager,
-            tool_set_manager,
+            runtime,
             session_store,
         })
+    }
+}
+
+/// Translates a gRPC [`SessionConfig`] into the engine's tool-session spec,
+/// projecting the global and per-plugin filesystem/network constraints.
+fn tool_spec_from(cfg: &SessionConfig) -> ToolSessionSpec {
+    ToolSessionSpec {
+        global: PluginConstraints {
+            allowed_paths: cfg.allowed_paths.clone(),
+            allowed_hosts: cfg.allowed_hosts.clone(),
+        },
+        overrides: cfg
+            .plugin_configs
+            .iter()
+            .map(|(stem, pc)| {
+                (
+                    stem.clone(),
+                    PluginConstraints {
+                        allowed_paths: pc.allowed_paths.clone(),
+                        allowed_hosts: pc.allowed_hosts.clone(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Translates a gRPC [`SessionConfig`] into the engine's model-client spec,
+/// carrying the selected plugin name (if any) and every plugin's config JSON.
+fn model_spec_from(cfg: &SessionConfig) -> ModelClientSpec {
+    ModelClientSpec {
+        client_name: (!cfg.model_client_name.is_empty()).then(|| cfg.model_client_name.clone()),
+        plugin_params: cfg
+            .plugin_configs
+            .iter()
+            .map(|(stem, pc)| (stem.clone(), pc.params_json.clone()))
+            .collect(),
     }
 }
 
@@ -189,8 +219,7 @@ impl AgentService for AgentServer {
 
         // Clone Arcs — cheap reference-count bumps, no data is copied.
         let config = self.config.clone();
-        let model_client_session_manager = self.model_client_session_manager.clone();
-        let tool_set_manager = self.tool_set_manager.clone();
+        let runtime = self.runtime.clone();
         let session_store = self.session_store.clone();
 
         tokio::spawn(async move {
@@ -284,7 +313,11 @@ impl AgentService for AgentServer {
 
             // --- Phase 2: get (or prepare) model client, then instantiate ---
 
-            let model_session = match model_client_session_manager.new_session(&session_cfg).await {
+            let model_session = match runtime
+                .model_clients()
+                .new_session(&model_spec_from(&session_cfg))
+                .await
+            {
                 Ok(model_session) => model_session,
                 Err(err) => {
                     channel_sender
@@ -300,7 +333,11 @@ impl AgentService for AgentServer {
                 "[session] loading plugins from {}",
                 config.plugin_dir.display()
             );
-            let tool_set = match tool_set_manager.new_tool_set(&session_cfg).await {
+            let tool_set = match runtime
+                .tools()
+                .new_tool_set(&tool_spec_from(&session_cfg))
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     channel_sender
@@ -497,7 +534,11 @@ impl AgentService for AgentServer {
                     Some(user_input::Input::ConfigUpdate(cfg)) => {
                         println!("[session] config updated");
 
-                        match model_client_session_manager.new_session(&cfg).await {
+                        match runtime
+                            .model_clients()
+                            .new_session(&model_spec_from(&cfg))
+                            .await
+                        {
                             Ok(new_session) => {
                                 agent.replace_model_client(new_session).await;
 

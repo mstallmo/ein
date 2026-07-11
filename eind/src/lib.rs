@@ -7,10 +7,8 @@
 //! meta-package binary can share the same entry-point without duplicating code.
 
 mod grpc;
-mod model_client;
 mod persistence;
 mod plugins;
-mod tools;
 
 pub use plugins::install_plugins;
 

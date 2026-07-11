@@ -19,6 +19,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::ToolSessionSpec;
 use bindings::Plugin;
 
 /// Shared factory for creating per-session WASM tool sets.
@@ -48,11 +49,8 @@ impl ToolSetManager {
 
     /// Loads and instantiates all `.wasm` tool plugins from `tool_dir`,
     /// returning a [`WasmToolSet`] configured for the given session.
-    pub async fn new_tool_set(
-        &self,
-        session_cfg: &ein_proto::ein::SessionConfig,
-    ) -> anyhow::Result<WasmToolSet> {
-        WasmToolSet::load(&self.engine, &self.linker, &self.tool_dir, session_cfg).await
+    pub async fn new_tool_set(&self, spec: &ToolSessionSpec) -> anyhow::Result<WasmToolSet> {
+        WasmToolSet::load(&self.engine, &self.linker, &self.tool_dir, spec).await
     }
 }
 
@@ -107,7 +105,7 @@ impl WasmToolSet {
         engine: &Engine,
         linker: &Linker<ToolState>,
         plugin_dir: P,
-        session_cfg: &ein_proto::ein::SessionConfig,
+        spec: &ToolSessionSpec,
     ) -> anyhow::Result<Self> {
         let mut registry = Self::new();
 
@@ -131,13 +129,13 @@ impl WasmToolSet {
                             .and_then(|s| s.to_str())
                             .unwrap_or("")
                             .to_string();
-                        let pc = session_cfg.plugin_configs.get(&stem);
+                        let pc = spec.overrides.get(&stem);
                         let merged_paths = merge_dedup(
-                            &session_cfg.allowed_paths,
+                            &spec.global.allowed_paths,
                             pc.map(|p| p.allowed_paths.as_slice()).unwrap_or(&[]),
                         );
                         let merged_hosts = merge_dedup(
-                            &session_cfg.allowed_hosts,
+                            &spec.global.allowed_hosts,
                             pc.map(|p| p.allowed_hosts.as_slice()).unwrap_or(&[]),
                         );
 
@@ -223,7 +221,7 @@ impl ToolSet for WasmToolSet {
 
 /// Merges two slices into a deduplicated Vec, preserving insertion order with
 /// `base` entries first. Used to union global and per-plugin allowed lists.
-pub fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
+fn merge_dedup(base: &[String], extra: &[String]) -> Vec<String> {
     let mut seen = collections::HashSet::new();
     let mut result = Vec::with_capacity(base.len() + extra.len());
     for s in base.iter().chain(extra.iter()) {
@@ -359,5 +357,49 @@ impl WasmTool {
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
         self.handle.resource_drop_async(&mut self.store).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn merge_dedup_both_empty() {
+        assert!(merge_dedup(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn merge_dedup_disjoint_keeps_base_first() {
+        assert_eq!(
+            merge_dedup(&v(&["/a", "/b"]), &v(&["/c"])),
+            v(&["/a", "/b", "/c"])
+        );
+    }
+
+    #[test]
+    fn merge_dedup_removes_cross_list_duplicates() {
+        // "/a" appears in both; it is kept once, from the base position.
+        assert_eq!(
+            merge_dedup(&v(&["/a", "/b"]), &v(&["/a", "/c"])),
+            v(&["/a", "/b", "/c"])
+        );
+    }
+
+    #[test]
+    fn merge_dedup_removes_intra_list_duplicates() {
+        assert_eq!(
+            merge_dedup(&v(&["/a", "/a"]), &v(&["/b", "/b"])),
+            v(&["/a", "/b"])
+        );
+    }
+
+    #[test]
+    fn merge_dedup_extra_only() {
+        assert_eq!(merge_dedup(&[], &v(&["*"])), v(&["*"]));
     }
 }

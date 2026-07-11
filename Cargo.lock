@@ -1133,6 +1133,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ein_wasm"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ein_agent",
+ "hyper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
+]
+
+[[package]]
 name = "ein_write"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -1155,6 +1171,7 @@ dependencies = [
  "ein_agent",
  "ein_plugin",
  "ein_proto",
+ "ein_wasm",
  "futures",
  "hyper",
  "reqwest",

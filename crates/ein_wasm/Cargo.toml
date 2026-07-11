@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Mason Stallmo
+
+[package]
+name = "ein_wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow             = { workspace = true }
+async-trait        = "0.1"
+ein_agent          = { path = "../ein_agent" }
+hyper              = { version = "1", default-features = false }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+tokio              = { workspace = true }
+wasmtime           = "42.0.1"
+wasmtime-wasi      = "42.0.1"
+wasmtime-wasi-http = "42.0.1"
