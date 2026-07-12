@@ -3,8 +3,20 @@ package ein:model-client;
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
+// Host callbacks a model-client plugin may invoke *during* `complete` to stream
+// partial results back before the full response is assembled. Scoped to the
+// model-client world (not the shared `ein:host/host`, which tool plugins also
+// import) since content streaming is a model-client concern.
+interface streaming {
+    // Emit a chunk of assistant text as it arrives from the model, so the host
+    // can forward it to the agent as a `ContentDelta` before `complete` returns.
+    // A plugin that does not stream simply never calls this.
+    on-content-delta: func(delta: string);
+}
+
 world model-client {
     import ein:host/host;
+    import streaming;
 
     export model-client: interface {
         resource model-client {

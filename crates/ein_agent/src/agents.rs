@@ -147,6 +147,8 @@ impl<MC: ModelClient, TS: ToolSet> AgentBuilder<MC, TS> {
     pub fn build(mut self) -> Agent<MC, TS> {
         if let Some(handler) = &self.event_handler {
             self.tools.set_event_handler(handler.clone());
+            // Streaming model clients emit `ContentDelta`s through the same sink.
+            self.model_client.set_event_handler(handler.clone());
         }
 
         let session_span = self.build_session_span();
@@ -455,8 +457,12 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
             match choice.finish_reason {
                 FinishReason::Stop => return Ok(choice.message),
                 FinishReason::ToolCalls => {
-                    // Stream any accompanying text before executing tools.
-                    if let Some(content) = &choice.message.content
+                    // Surface any text the model produced before the tool calls.
+                    // A streaming client has already emitted it chunk-by-chunk, so
+                    // only broadcast here for non-streaming clients — otherwise the
+                    // preamble would appear twice.
+                    if !self.model_client.content_streamed()
+                        && let Some(content) = &choice.message.content
                         && !content.is_empty()
                     {
                         self.broadcast_event(AgentEvent::ContentDelta(content.to_owned()))

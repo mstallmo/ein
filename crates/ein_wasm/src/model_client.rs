@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 use ein_agent::{
-    SessionParams, async_trait,
+    AgentEventHandler, SessionParams, async_trait,
     model_clients::{CompletionRequest, CompletionResponse, Message, ModelClient, ToolDef},
 };
 use tokio::sync::OnceCell;
@@ -203,6 +203,14 @@ impl ModelClient for ModelClientSession {
         self.client.complete(&req).await
     }
 
+    fn set_event_handler(&mut self, handler: AgentEventHandler) {
+        self.client.set_event_handler(handler);
+    }
+
+    fn content_streamed(&self) -> bool {
+        self.client.content_streamed()
+    }
+
     async fn cleanup(mut self) {
         if let Err(e) = self.client.cleanup().await {
             eprintln!("[model_client] cleanup error: {e}");
@@ -222,6 +230,14 @@ struct ModelClientState {
     pub wasi_ctx: WasiCtx,
     pub http_ctx: WasiHttpCtx,
     pub allowed_hosts: HashSet<String>,
+    /// Sink for streaming events the plugin emits mid-`complete` (a
+    /// `ContentDelta` per chunk via the `on-content-delta` host callback). Set by
+    /// [`ModelClientSession::set_event_handler`] when the agent is built.
+    pub event_handler: Option<AgentEventHandler>,
+    /// Set by the `on-content-delta` callback whenever the current `complete`
+    /// streamed at least one chunk. Reset before each call so the agent loop can
+    /// tell whether the text already went out incrementally.
+    pub content_streamed: bool,
 }
 
 impl WasiView for ModelClientState {
@@ -318,6 +334,8 @@ impl WasmModelClient {
                 wasi_ctx: wasi,
                 http_ctx: WasiHttpCtx::new(),
                 allowed_hosts,
+                event_handler: None,
+                content_streamed: false,
             },
         );
 
@@ -339,10 +357,25 @@ impl WasmModelClient {
         Ok(())
     }
 
+    /// Register the streaming sink; the `on-content-delta` host callback forwards
+    /// chunks through it.
+    fn set_event_handler(&mut self, handler: AgentEventHandler) {
+        self.store.data_mut().event_handler = Some(handler);
+    }
+
+    /// Whether the last [`complete`](Self::complete) streamed any content.
+    fn content_streamed(&self) -> bool {
+        self.store.data().content_streamed
+    }
+
     pub async fn complete(
         &mut self,
         req: &CompletionRequest,
     ) -> anyhow::Result<CompletionResponse> {
+        // Reset the per-call streaming flag; the `on-content-delta` callback sets
+        // it if the plugin streams during this call.
+        self.store.data_mut().content_streamed = false;
+
         let request_json = serde_json::to_string(req)?;
         eprintln!("[model_client] RAW request: {request_json}");
 

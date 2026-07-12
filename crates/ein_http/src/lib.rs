@@ -23,7 +23,7 @@
 use anyhow::anyhow;
 use serde::Serialize;
 use std::collections::HashMap;
-use wstd::http::{Body, Client, Request, Uri};
+use wstd::http::{Body, BodyExt, Client, Request, Uri};
 use wstd::runtime::block_on;
 
 /// Returned by [`HttpRequest::send`] when the host allowlist blocks the
@@ -132,35 +132,7 @@ impl HttpRequest {
     /// errors — check [`HttpResponse::is_success`] or [`HttpResponse::status`].
     pub fn send(self) -> anyhow::Result<HttpResponse> {
         block_on(async {
-            let uri: Uri = self
-                .url
-                .parse()
-                .map_err(|e| anyhow!("invalid URL '{url}': {e}", url = self.url))?;
-
-            let mut builder = match self.method {
-                HttpMethod::Get => Request::get(uri),
-                HttpMethod::Post => Request::post(uri),
-                HttpMethod::Put => Request::put(uri),
-                HttpMethod::Patch => Request::patch(uri),
-                HttpMethod::Delete => Request::delete(uri),
-            };
-
-            for (key, value) in &self.headers {
-                builder = builder.header(key.as_str(), value.as_str());
-            }
-
-            let request = builder
-                .body(Body::from(self.body))
-                .map_err(|e| anyhow!("failed to build request: {e}"))?;
-
-            let response = Client::new().send(request).await.map_err(|e| {
-                if e.to_string().contains("HttpRequestDenied") {
-                    anyhow::Error::new(RequestDeniedError)
-                } else {
-                    anyhow!("HTTP request failed: {e}")
-                }
-            })?;
-
+            let response = self.dispatch().await?;
             let status = response.status().as_u16();
             let body_bytes = response
                 .into_body()
@@ -173,6 +145,78 @@ impl HttpRequest {
                 status,
                 body: body_bytes,
             })
+        })
+    }
+
+    /// Dispatch the request and stream the response body **incrementally**,
+    /// invoking `on_chunk` with each chunk of bytes as it arrives off the wire.
+    ///
+    /// Unlike [`send`](Self::send), this does not buffer the whole body before
+    /// returning — it is the primitive for consuming a streaming response (e.g.
+    /// an SSE `text/event-stream`). The caller assembles whatever it needs from
+    /// the chunks; only the final HTTP status is returned. Chunk boundaries are
+    /// arbitrary (a chunk may split or join protocol lines), so a line/event
+    /// parser must buffer across calls — splitting on `\n` at the byte level is
+    /// safe since `\n` never occurs inside a UTF-8 multibyte sequence.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send), plus any error reading a body frame. Does **not**
+    /// treat non-2xx status codes as errors — inspect the returned status.
+    pub fn send_streaming(self, mut on_chunk: impl FnMut(&[u8])) -> anyhow::Result<u16> {
+        block_on(async {
+            let response = self.dispatch().await?;
+            let status = response.status().as_u16();
+
+            // `UnsyncBoxBody` is `Unpin`, so `BodyExt::frame` drives it without
+            // manual pinning; each data frame is a chunk as it arrives.
+            let mut body = response.into_body().into_boxed_body();
+            while let Some(frame) = body.frame().await {
+                let frame =
+                    frame.map_err(|e| anyhow!("failed to read response body frame: {e}"))?;
+                // Data frames carry the body bytes; trailer frames are ignored.
+                if let Ok(data) = frame.into_data()
+                    && !data.is_empty()
+                {
+                    on_chunk(&data);
+                }
+            }
+
+            Ok(status)
+        })
+    }
+
+    /// Build the `wstd` request and dispatch it, mapping a host-allowlist denial
+    /// to [`RequestDeniedError`]. Shared by [`send`](Self::send) and
+    /// [`send_streaming`](Self::send_streaming).
+    async fn dispatch(self) -> anyhow::Result<wstd::http::Response<Body>> {
+        let uri: Uri = self
+            .url
+            .parse()
+            .map_err(|e| anyhow!("invalid URL '{url}': {e}", url = self.url))?;
+
+        let mut builder = match self.method {
+            HttpMethod::Get => Request::get(uri),
+            HttpMethod::Post => Request::post(uri),
+            HttpMethod::Put => Request::put(uri),
+            HttpMethod::Patch => Request::patch(uri),
+            HttpMethod::Delete => Request::delete(uri),
+        };
+
+        for (key, value) in &self.headers {
+            builder = builder.header(key.as_str(), value.as_str());
+        }
+
+        let request = builder
+            .body(Body::from(self.body))
+            .map_err(|e| anyhow!("failed to build request: {e}"))?;
+
+        Client::new().send(request).await.map_err(|e| {
+            if e.to_string().contains("HttpRequestDenied") {
+                anyhow::Error::new(RequestDeniedError)
+            } else {
+                anyhow!("HTTP request failed: {e}")
+            }
         })
     }
 }

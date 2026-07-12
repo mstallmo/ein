@@ -3,6 +3,10 @@
 
 pub mod syscalls {
     pub use crate::model_client::__wit::ein::host::host::log;
+    /// Emit a chunk of streamed assistant text to the host mid-`complete` (see
+    /// the `streaming` interface in `wit/model_client`). A plugin that streams
+    /// calls this per token/chunk; one that doesn't never calls it.
+    pub use crate::model_client::__wit::ein::model_client::streaming::on_content_delta;
 }
 
 #[doc(hidden)]
