@@ -1,0 +1,8 @@
+# This repo is consumed as a Docker build context (the RedStar `edward` deploy uses
+# it as the `ein` named context — for agent-service's Cargo path dependency and the
+# wasm32-wasip2 plugin build). Without this, Cargo's target/ (tens of GB) would be
+# transferred on every build. Exclude build output and VCS metadata; the Cargo
+# sources (crates/, plugins/, eind/, ein/, wit/, Cargo.*) are kept.
+target/
+.jj/
+**/.DS_Store
