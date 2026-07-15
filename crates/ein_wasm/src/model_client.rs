@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::anyhow;
 use ein_agent::{
     AgentEventHandler, SessionParams, async_trait,
-    model_clients::{CompletionRequest, CompletionResponse, Message, ModelClient, ToolDef},
+    model_clients::{
+        CompletionRequest, CompletionResponse, Message, ModelClient, ReasoningConfig, ToolDef,
+    },
 };
 use tokio::sync::OnceCell;
 use wasmtime::{Engine, Store, component::*};
@@ -145,13 +147,22 @@ fn extract_model_params(
         .as_i64()
         .map(|n| n as i32)
         .unwrap_or(2500);
+    // Reasoning is optional and off by default; an absent or malformed key
+    // leaves it `None` so the request wire format is unchanged.
+    let reasoning = config
+        .get("reasoning")
+        .and_then(|value| serde_json::from_value::<ReasoningConfig>(value.clone()).ok());
 
     let allowed_hosts = derive_allowed_hosts(base_url);
 
     (
         params_json,
         allowed_hosts,
-        SessionParams { model, max_tokens },
+        SessionParams {
+            model,
+            max_tokens,
+            reasoning,
+        },
     )
 }
 
@@ -198,6 +209,7 @@ impl ModelClient for ModelClientSession {
             messages: messages.to_vec(),
             tools: tools.to_vec(),
             max_tokens: self.params.max_tokens,
+            reasoning: self.params.reasoning.clone(),
         };
 
         self.client.complete(&req).await

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mason Stallmo
 
-use ein_core::types::{FinishReason, FunctionCall, Message, Role, ToolCall};
+use ein_core::types::{FinishReason, FunctionCall, Message, ReasoningConfig, Role, ToolCall};
 use futures::future::BoxFuture;
 use tracing::{Instrument, error, info};
 
@@ -20,6 +20,10 @@ use std::sync::Arc;
 pub struct SessionParams {
     pub model: String,
     pub max_tokens: i32,
+    /// Reasoning/thinking request configuration, threaded onto every
+    /// [`CompletionRequest`](ein_core::types::CompletionRequest) this session
+    /// makes. `None` leaves reasoning off (the wire format is unchanged).
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +53,9 @@ pub type AgentEventHandler = Arc<dyn Fn(AgentEvent) -> BoxFuture<'static, ()> + 
 pub enum AgentEvent {
     /// A text chunk from the model's response as it streams in.
     ContentDelta(String),
+    /// A chunk of the model's reasoning/thinking as it streams in, ahead of (and
+    /// separate from) the assistant text. Never persisted to message history.
+    ReasoningDelta(String),
     /// Cumulative token counts reported by the model after a completion call.
     TokenUsage {
         prompt_tokens: u32,
@@ -237,10 +244,16 @@ impl<MC: ModelClient, TS: ToolSet> Agent<MC, TS> {
         }
     }
 
-    pub async fn replace_model_client(&mut self, model_client: MC)
+    pub async fn replace_model_client(&mut self, mut model_client: MC)
     where
         MC: Send + 'static,
     {
+        // Re-register the streaming sink on the incoming client — a freshly built
+        // client has no event handler, so without this the swap would silently
+        // stop `ContentDelta`/`ReasoningDelta` streaming.
+        if let Some(handler) = &self.event_handler {
+            model_client.set_event_handler(handler.clone());
+        }
         let old_client = mem::replace(&mut self.model_client, model_client);
         old_client.cleanup().await
     }

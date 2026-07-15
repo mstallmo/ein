@@ -1,4 +1,6 @@
-pub use ein_core::types::{CompletionRequest, CompletionResponse, Message, ToolDef};
+pub use ein_core::types::{
+    CompletionRequest, CompletionResponse, Message, ReasoningConfig, ToolDef,
+};
 
 use crate::AgentEventHandler;
 use async_trait::async_trait;

@@ -7,6 +7,10 @@ pub mod syscalls {
     /// the `streaming` interface in `wit/model_client`). A plugin that streams
     /// calls this per token/chunk; one that doesn't never calls it.
     pub use crate::model_client::__wit::ein::model_client::streaming::on_content_delta;
+    /// Emit a chunk of streamed reasoning/thinking to the host mid-`complete`.
+    /// The host forwards it as a `ReasoningDelta`; it is never folded into the
+    /// assistant message. A plugin whose model produces no reasoning never calls it.
+    pub use crate::model_client::__wit::ein::model_client::streaming::on_reasoning_delta;
 }
 
 #[doc(hidden)]
@@ -52,8 +56,8 @@ macro_rules! export_model_client {
 }
 
 pub use ein_core::types::{
-    Choice, CompletionRequest, CompletionResponse, FinishReason, FunctionCall, Message, Role,
-    ToolCall, ToolDef, ToolFunctionParams, Usage,
+    Choice, CompletionRequest, CompletionResponse, FinishReason, FunctionCall, Message,
+    ReasoningConfig, Role, ToolCall, ToolDef, ToolFunctionParams, Usage,
 };
 pub use ein_http::{HttpRequest, HttpResponse, RequestDeniedError};
 

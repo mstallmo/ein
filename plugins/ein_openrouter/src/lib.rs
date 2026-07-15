@@ -87,6 +87,12 @@ impl ModelClientPlugin for OpenRouterPlugin {
     fn complete(&self, request_json: &str) -> anyhow::Result<String> {
         let req: CompletionRequest = serde_json::from_str(request_json)?;
 
+        // Whether to surface reasoning to the host. On by default (honour the
+        // model's own default), but an explicit `reasoning.enabled = false`
+        // suppresses forwarding so a disabled session never shows thinking — even
+        // for models that stream reasoning regardless of the request flag.
+        let emit_reasoning = req.reasoning.as_ref().is_none_or(|r| r.enabled);
+
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -117,9 +123,15 @@ impl ModelClientPlugin for OpenRouterPlugin {
                 while let Some(nl) = pending.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = pending.drain(..=nl).collect();
                     let line = String::from_utf8_lossy(&line[..line.len() - 1]);
-                    acc.handle_sse_line(line.trim(), &mut |delta| {
-                        syscalls::on_content_delta(delta)
-                    });
+                    acc.handle_sse_line(
+                        line.trim(),
+                        &mut |delta| syscalls::on_content_delta(delta),
+                        &mut |delta| {
+                            if emit_reasoning {
+                                syscalls::on_reasoning_delta(delta);
+                            }
+                        },
+                    );
                 }
             })
             .map_err(|e| anyhow!("Could not connect to {}: {e}", self.config.base_url))?;
@@ -160,10 +172,16 @@ struct ToolCallAcc {
 
 impl StreamAccumulator {
     /// Process one SSE line (`data: {…}`, `data: [DONE]`, comments, or blanks).
-    /// Each text delta is passed to `on_delta` immediately (the caller forwards
-    /// it to the host); everything else is accumulated for the final response.
-    /// `on_delta` is injected so the reassembly logic is testable off-wasm.
-    fn handle_sse_line(&mut self, line: &str, on_delta: &mut impl FnMut(&str)) {
+    /// Each text delta is passed to `on_content` and each reasoning delta to
+    /// `on_reasoning` immediately (the caller forwards them to the host);
+    /// everything else is accumulated for the final response. The callbacks are
+    /// injected so the reassembly logic is testable off-wasm.
+    fn handle_sse_line(
+        &mut self,
+        line: &str,
+        on_content: &mut impl FnMut(&str),
+        on_reasoning: &mut impl FnMut(&str),
+    ) {
         let Some(data) = line.strip_prefix("data:") else {
             return; // comments, event:/id: lines, and blank separators
         };
@@ -188,11 +206,19 @@ impl StreamAccumulator {
         if let Some(reason) = choice.finish_reason {
             self.finish_reason = Some(reason);
         }
+        if let Some(reasoning) = choice.delta.reasoning
+            && !reasoning.is_empty()
+        {
+            // Forward reasoning to the host only. It is deliberately *not*
+            // accumulated into `self.content` — reasoning never becomes part of
+            // the persisted assistant message.
+            on_reasoning(&reasoning);
+        }
         if let Some(content) = choice.delta.content
             && !content.is_empty()
         {
             // Forward the chunk to the host, then accumulate for history.
-            on_delta(&content);
+            on_content(&content);
             self.content.push_str(&content);
         }
         for tool_call in choice.delta.tool_calls.unwrap_or_default() {
@@ -284,6 +310,11 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
+    /// The model's reasoning/thinking for this chunk, when the model and the
+    /// request's `reasoning` setting produce it. Streamed to the host separately
+    /// and never folded into `content`.
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<StreamToolCall>>,
 }
@@ -451,14 +482,23 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     /// Feed synthetic SSE lines through the accumulator, returning the final
-    /// reassembled response and the deltas emitted in order.
+    /// reassembled response and the content deltas emitted in order.
     fn feed(lines: &[&str]) -> (CompletionResponse, Vec<String>) {
+        let (resp, content, _reasoning) = feed_full(lines);
+        (resp, content)
+    }
+
+    /// Like [`feed`], but also returns the reasoning deltas emitted in order.
+    fn feed_full(lines: &[&str]) -> (CompletionResponse, Vec<String>, Vec<String>) {
         let mut acc = StreamAccumulator::default();
-        let mut deltas = Vec::new();
+        let mut content = Vec::new();
+        let mut reasoning = Vec::new();
         for line in lines {
-            acc.handle_sse_line(line, &mut |d| deltas.push(d.to_string()));
+            acc.handle_sse_line(line, &mut |d| content.push(d.to_string()), &mut |d| {
+                reasoning.push(d.to_string())
+            });
         }
-        (acc.into_response(), deltas)
+        (acc.into_response(), content, reasoning)
     }
 
     #[test]
@@ -475,6 +515,25 @@ mod tests {
         assert_eq!(choice.message.content.as_deref(), Some("Hello"));
         assert!(matches!(choice.finish_reason, FinishReason::Stop));
         assert!(choice.message.tool_calls.is_none());
+    }
+
+    #[test]
+    fn streams_reasoning_separately_and_keeps_it_out_of_content() {
+        let (resp, content, reasoning) = feed_full(&[
+            r#"data: {"choices":[{"delta":{"reasoning":"Let me think"}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning":" it through"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"Answer"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]);
+        // Reasoning chunks stream on their own channel, in order.
+        assert_eq!(
+            reasoning,
+            vec!["Let me think".to_string(), " it through".to_string()]
+        );
+        assert_eq!(content, vec!["Answer".to_string()]);
+        // The persisted assistant message carries only the answer, never the reasoning.
+        assert_eq!(resp.choices[0].message.content.as_deref(), Some("Answer"));
     }
 
     #[test]

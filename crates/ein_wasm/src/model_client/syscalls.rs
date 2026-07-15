@@ -18,4 +18,13 @@ impl super::bindings::ein::model_client::streaming::Host for super::ModelClientS
             handler(AgentEvent::ContentDelta(delta)).await;
         }
     }
+
+    async fn on_reasoning_delta(&mut self, delta: String) {
+        // Reasoning is separate from the assistant text: it is never folded into
+        // the final message, so it must not set `content_streamed`. Just forward
+        // the chunk as a `ReasoningDelta`.
+        if let Some(handler) = &self.event_handler {
+            handler(AgentEvent::ReasoningDelta(delta)).await;
+        }
+    }
 }

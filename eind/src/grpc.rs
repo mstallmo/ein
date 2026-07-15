@@ -494,6 +494,11 @@ impl AgentService for AgentServer {
                                 completion_tokens: completion_tokens as i32,
                                 total_tokens: total_tokens as i32,
                             }),
+                            // The gRPC/TUI protocol has no reasoning event; drop it
+                            // here so the match stays exhaustive. Reasoning is
+                            // surfaced by the Edward web client, which consumes
+                            // `AgentEvent` directly rather than over gRPC.
+                            AgentEvent::ReasoningDelta(_) => return,
                         };
 
                         channel_sender.send_event(proto_event).await;

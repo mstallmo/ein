@@ -19,6 +19,26 @@ pub struct CompletionRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDef>,
     pub max_tokens: i32,
+    /// Reasoning/thinking request configuration. `None` (the default) omits the
+    /// field from the JSON entirely, preserving the exact OpenAI wire format for
+    /// providers and models that don't support reasoning tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
+}
+
+/// Reasoning/thinking configuration for a [`CompletionRequest`].
+///
+/// Serialises to the OpenRouter `reasoning` request field
+/// (e.g. `{ "enabled": true, "effort": "high" }`). Only sent when the session
+/// has reasoning enabled; see [`CompletionRequest::reasoning`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningConfig {
+    /// Ask the provider to produce reasoning tokens for this completion.
+    pub enabled: bool,
+    /// Optional reasoning-effort hint (`"low"`/`"medium"`/`"high"`). Omitted when
+    /// `None` so the provider applies its own default budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// The response returned by a model client plugin after a completion call.
@@ -449,6 +469,7 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: vec![],
+            reasoning: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let decoded: CompletionRequest = serde_json::from_str(&json).unwrap();

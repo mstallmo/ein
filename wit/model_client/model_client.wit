@@ -12,6 +12,12 @@ interface streaming {
     // can forward it to the agent as a `ContentDelta` before `complete` returns.
     // A plugin that does not stream simply never calls this.
     on-content-delta: func(delta: string);
+
+    // Emit a chunk of the model's reasoning/thinking as it arrives, so the host
+    // can forward it to the agent as a `ReasoningDelta`. Reasoning is streamed
+    // separately from assistant text and is never folded into the final message
+    // content. A plugin whose model doesn't produce reasoning never calls this.
+    on-reasoning-delta: func(delta: string);
 }
 
 world model-client {
